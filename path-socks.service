@@ -1,0 +1,22 @@
+[Unit]
+Description=VLESS WebSocket dynamic SOCKS5 path gateway
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=path-socks
+Group=path-socks
+WorkingDirectory=/opt/path-socks
+ExecStart=/opt/path-socks/node_modules/.bin/workerd serve /opt/path-socks/config.capnp
+Restart=always
+RestartSec=2
+LimitNOFILE=1048576
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/path-socks
+
+[Install]
+WantedBy=multi-user.target
