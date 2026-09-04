@@ -43,6 +43,16 @@ curl -fsSL https://raw.githubusercontent.com/youqishi1/path-socks/main/bootstrap
 
 切换落地IP只需修改本地客户端Path并重新连接，不需要修改VPS。
 
+v2rayN建议同时设置：
+
+```text
+最大早期数据：2048
+早期数据头名称：Sec-WebSocket-Protocol
+Mux：关闭（稳定优先）
+```
+
+早期数据可以减少建立新连接时的一次往返；Mux在这种双跳链路中可能产生队头阻塞，因此默认关闭更稳定。
+
 ## 管理
 
 ```bash

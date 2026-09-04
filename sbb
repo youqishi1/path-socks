@@ -57,6 +57,9 @@ show_config() {
   echo "Host：$d"
   echo "Flow：留空"
   echo "Path：/proxyip=socks5://用户名:密码@住宅IP:端口"
+  echo "最大早期数据：2048"
+  echo "早期数据头：Sec-WebSocket-Protocol"
+  echo "Mux：关闭（稳定优先）"
   echo
   printf "${cyan}用户UUID${reset}\n"
   awk -F '|' '{printf "%2d. %-16s %s\n", NR, $1, $2}' "$USERS_FILE"
