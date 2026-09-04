@@ -1,0 +1,17 @@
+#!/sbin/openrc-run
+
+name="path-socks"
+description="VLESS WebSocket dynamic SOCKS5 path gateway"
+command="/opt/path-socks/path-socks"
+command_args="-listen 127.0.0.1:18080 -users /etc/path-socks/users.db"
+command_user="path-socks:path-socks"
+supervisor="supervise-daemon"
+respawn_delay=2
+respawn_max=0
+output_log="/var/log/path-socks.log"
+error_log="/var/log/path-socks.log"
+
+depend() {
+    need net
+    after firewall
+}

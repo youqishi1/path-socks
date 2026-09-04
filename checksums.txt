@@ -1,0 +1,2 @@
+1d063329f74ba9f8bf04c31af75f3f3529ef4c1cd74f549ff0201c0fd4bcf495  path-socks-linux-amd64
+7149c6d2b74ac575ffe558658fb830c4c9a725fe20c9f2fc29c9b11b356d39ee  path-socks-linux-arm64
