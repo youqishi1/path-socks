@@ -17,6 +17,10 @@ require_root() { [[ "$EUID" -eq 0 ]] || { say_err "请使用root用户运行sbb"
 domain() { tr -d '\r\n' < "$DOMAIN_FILE"; }
 port() { tr -d '\r\n' < "$PORT_FILE"; }
 init_system() { tr -d '\r\n' < "$INIT_FILE"; }
+is_nginx() { [[ "$(cat "$STATE_DIR/transport" 2>/dev/null || true)" == nginx ]]; }
+enable_service() {
+  if [[ "$(init_system)" == systemd ]]; then systemctl enable --now "$1"; else rc-update add "$1" default; rc-service "$1" start; fi
+}
 
 service_restart() {
   if [[ "$(init_system)" == "systemd" ]]; then systemctl restart "$1"; else rc-service "$1" restart; fi
@@ -124,9 +128,10 @@ reset_user() {
 }
 
 run_installer() {
-  local tmp result
+  local tmp result script=install-path.sh
+  if is_nginx; then script=install-nginx.sh; fi
   tmp="$(mktemp /tmp/path-socks-reinstall.XXXXXX)"
-  if ! curl -fsSL --retry 3 --connect-timeout 10 --max-time 120 "$RAW_BASE/install-path.sh" -o "$tmp"; then
+  if ! curl -fsSL --retry 3 --connect-timeout 10 --max-time 120 "$RAW_BASE/$script" -o "$tmp"; then
     rm -f -- "$tmp"; say_err "下载失败，未修改现有程序"; return 1
   fi
   # Run a fresh interpreter; successful upgrades replace this manager on disk.
@@ -138,12 +143,14 @@ run_installer() {
 
 change_domain() {
   local new
-  read -r -p "新域名（新Zone需要相应DNS Token）：" new </dev/tty
+  if is_nginx; then echo '新域名A记录需指向本VPS，80需公网可达；无需CF Token。'; else echo '新Zone需要相应DNS Token。'; fi
+  read -r -p "新域名：" new </dev/tty
   validate_domain "$new" || { say_err "域名格式不正确"; return; }
   run_installer "$new" || say_err "更换未完成，请查看上方错误"
 }
 
 change_port() (
+  if is_nginx; then echo '原版固定使用80/443；要使用高位端口，请回到安装菜单选择方案3。'; return 0; fi
   exec 9>/run/path-socks-maintenance.lock
   flock -n 9 || { say_err "安装或证书维护正在进行，请稍后重试"; return 1; }
   local old new
@@ -196,7 +203,7 @@ status_check() {
   connections="$(ss -Hnt state established "( sport = :$p )" 2>/dev/null | wc -l || true)"
   memory="$(ps -o rss= -C path-socks 2>/dev/null | awk '{s+=$1} END{printf "%.1f MB", s/1024}' || true)"
   echo "核心：$(service_active path-socks)"
-  echo "独立TLS端口：$p（不依赖Nginx）"
+  if is_nginx; then echo "原版80/443入口：$(service_active path-socks-nginx)"; else echo "独立TLS端口：$p（不依赖Nginx）"; fi
   echo "该端口TCP连接数（不等于设备数）：$connections"
   echo "核心内存：$memory"
   echo "本机TLS检查：$(local_health 2>/dev/null || echo 失败)"
@@ -225,12 +232,14 @@ uninstall_program() {
   exec 8>/run/path-socks-maintenance.lock
   flock -n 8 || { say_err "安装或证书维护正在进行，请稍后重试"; return 1; }
   local answer init
-  echo "删除核心、sbb、UUID及本项目Token和证书；不改Nginx或其他服务。"
+  echo "删除Path核心、UUID及高位模式Token和证书；保留共享sbb和原版独立Nginx配置/证书。"
+  echo "会停用本项目path-socks-nginx；不会操作系统nginx或其他网站。"
   echo "/var/backups/path-socks.*中的历史私密备份会保留；防火墙规则保留。"
   read -r -p "确定卸载请输入 DELETE：" answer </dev/tty
   [[ "$answer" == DELETE ]] || { echo "已取消"; return; }
   init="$(init_system)"
   service_stop_disable path-socks
+  service_stop_disable path-socks-nginx
   if [[ "$init" == systemd ]]; then
     service_stop_disable path-socks-renew.timer
     systemctl stop path-socks-renew.service 2>/dev/null || true
@@ -277,12 +286,12 @@ menu() {
       6) status_check; pause_menu ;;
       7) show_logs; pause_menu ;;
       8) update_program; return ;;
-      9) service_restart path-socks; say_ok "已重启"; pause_menu ;;
+      9) service_restart path-socks; if is_nginx; then service_restart path-socks-nginx; fi; say_ok "已重启"; pause_menu ;;
       10) uninstall_program; return ;;
       11) change_port; pause_menu ;;
       12) read -r -p "将断开本方案全部连接，输入yes确认：" answer </dev/tty
-          if [[ "$answer" == yes ]]; then service_stop_disable path-socks; fi; pause_menu ;;
-      13) if [[ "$(init_system)" == systemd ]]; then systemctl enable --now path-socks; else rc-update add path-socks default; rc-service path-socks start; fi; pause_menu ;;
+          if [[ "$answer" == yes ]]; then service_stop_disable path-socks; if is_nginx; then service_stop_disable path-socks-nginx; fi; fi; pause_menu ;;
+      13) enable_service path-socks; if is_nginx; then enable_service path-socks-nginx; fi; pause_menu ;;
       0) return ;;
       *) say_err "无效选择"; sleep 1 ;;
     esac

@@ -33,7 +33,7 @@ case "${1:-menu}" in
 esac
 while true; do
   echo
-  echo 'SBB 双方案管理'
+  echo 'SBB 管理（REALITY / Path）'
   echo '1. REALITY方案（用户、端口、连接码、启停）'
   echo '2. Path方案（原来的管理菜单）'
   echo '3. 安装 / 更新 / 添加另一种方案'

@@ -1,13 +1,14 @@
-# SBB 双方案住宅代理中转
+# SBB 住宅代理中转：三种安装选择
 
 一条SSH命令安装，菜单选择方案；以后输入 **sbb** 管理。新版本没有远程替你修改VPS，必须由你在目标VPS执行安装。
 
 | 选择 | 用途 | 安装需要 | 住宅IP怎么换 |
 |---|---|---|---|
 | 1 · REALITY（推荐） | 官方Xray核心＋本地链式住宅SOCKS5 | 公网IPv4、空闲高位TCP端口；无需自己的域名/CF Token | 在本地修改住宅节点或重新生成配置 |
-| 2 · Path | 原有Go核心＋WebSocket TLS | 域名灰云、有效CF DNS Token、空闲高位TCP端口 | 直接修改客户端Path |
+| 2 · Path原版80/443 | Nginx＋Go核心＋WebSocket TLS | 域名灰云、空闲且公网可达的80/443；不需要CF Token | 直接修改客户端Path |
+| 3 · Path高位端口 | Go核心直接提供WebSocket TLS | 域名灰云、有效CF DNS Token、空闲高位TCP端口 | 直接修改客户端Path |
 
-两套配置和服务互相独立。安装另一种方案**不自动停掉原方案**，不会操作系统Nginx、其他Xray实例或其他网站。只想运行一种时，在另一种的管理菜单中选择“停用”，配置仍然保留。
+REALITY与Path配置独立，可同时保留。**两种Path模式共用核心和UUID，互相切换而非同时运行**；切换会短暂断开Path连接，需要更新客户端端口。原版检测到其他服务占用80/443时停止，不接管原网站。原版使用独立`path-socks-nginx`实例及配置；若本次首次安装Nginx软件包，会停用该新安装包的默认实例，已有其他Nginx服务不操作。
 
 ## 1. VPS安装
 
@@ -21,7 +22,8 @@ sbb_file=$(mktemp /tmp/sbb-install.XXXXXX) && curl -fsSL --retry 3 --connect-tim
 
 ```text
 1. REALITY + 本地住宅链式代理（推荐，无需域名和CF Token）
-2. Path动态SOCKS5（保留原操作方式）
+2. Path原版80/443（需要域名，不需要CF Token）
+3. Path高位端口（需要域名和CF DNS Token）
 0. 退出
 ```
 
@@ -35,7 +37,9 @@ sbb_file=$(mktemp /tmp/sbb-install.XXXXXX) && curl -fsSL --retry 3 --connect-tim
 
 已有Path版本的用户：用上述命令进入新菜单，不要用旧版菜单8跨方案更新。选择1不会读取CF Token，也不会覆盖Path的UUID。已有旧版单方案管理脚本会保留。
 
-REALITY服务：`sbb-reality`，程序 `/opt/sbb-reality`，配置 `/etc/sbb-reality`。Path服务：`path-socks`，目录沿用旧版。均优先使用高位端口，不修改全局BBR、队列或其他网络参数。
+选择2后：输入域名即可。提前将域名A记录指向本VPS、关闭橙云，在云安全组放行TCP **80和443**；不要保留错误的AAAA记录。自动申请HTTP-01证书，客户端使用443，后续继续直接改Path。80需要持续开放用于续期，不需要Cloudflare Token。其他服务已占用80/443则安全退出，不会强停；可以改选1或3。
+
+REALITY服务：`sbb-reality`，程序 `/opt/sbb-reality`，配置 `/etc/sbb-reality`。Path服务：`path-socks`，目录沿用旧版。原版额外使用`path-socks-nginx`及`/etc/path-socks-nginx`，不覆盖`/etc/nginx`网站配置。不修改全局BBR、队列或其他网络参数。
 
 ## 2. 本地配置：住宅信息不填VPS
 

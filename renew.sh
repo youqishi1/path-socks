@@ -7,6 +7,18 @@ STATE_DIR=/etc/path-socks
 DOMAIN="$(tr -d '\r\n' < "$STATE_DIR/domain")"
 [[ "$DOMAIN" =~ ^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$ ]] || exit 1
 CERT_NAME="path-socks-$DOMAIN"
+if [[ "$(cat "$STATE_DIR/transport" 2>/dev/null || true)" == nginx ]]; then
+  certbot renew --config-dir /etc/path-socks-nginx/acme --work-dir /var/lib/path-socks-nginx-acme --logs-dir /var/log/path-socks-nginx-acme --cert-name "$CERT_NAME" --quiet
+  NGINX="$(cat /etc/path-socks-nginx/nginx-bin)"
+  [[ "$NGINX" =~ ^/[A-Za-z0-9_./-]+$ ]] || exit 1
+  "$NGINX" -t -c /etc/path-socks-nginx/nginx.conf -p /var/lib/path-socks-nginx
+  if [[ "$(cat "$STATE_DIR/init-system")" == systemd ]]; then
+    if systemctl is-active --quiet path-socks-nginx; then systemctl reload path-socks-nginx; fi
+  else
+    if rc-service path-socks-nginx status >/dev/null 2>&1; then rc-service path-socks-nginx reload; fi
+  fi
+  exit 0
+fi
 certbot renew --config-dir "$STATE_DIR/acme" --work-dir /var/lib/path-socks-acme --logs-dir /var/log/path-socks-acme \
   --cert-name "$CERT_NAME" --quiet
 TEMP="$(mktemp "$STATE_DIR/tls.XXXXXX")"

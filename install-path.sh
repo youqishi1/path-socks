@@ -102,6 +102,11 @@ chmod 0755 "$TMP_DIR/path-socks"
 echo "[3/7] 选择独立高位端口"
 SAVED_PORT=25443
 [[ ! -s "$STATE_DIR/port" ]] || SAVED_PORT="$(tr -d '\r\n' < "$STATE_DIR/port")"
+OLD_TRANSPORT="$(cat "$STATE_DIR/transport" 2>/dev/null || true)"
+if [[ "$OLD_TRANSPORT" == nginx ]]; then
+  SAVED_PORT=25443
+  echo '将从80/443切换到高位Path，保留UUID；成功后停用本项目的80/443入口。'
+fi
 PORT_INPUT="${2:-}"
 if [[ -z "$PORT_INPUT" ]]; then
   read -r -p "TLS端口（回车使用 $SAVED_PORT，占用则自动换空闲端口）：" PORT_INPUT </dev/tty
@@ -149,6 +154,7 @@ certbot certonly --config-dir "$STATE_DIR/acme" --work-dir /var/lib/path-socks-a
   --cert-name "$CERT_NAME" -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --keep-until-expiring
 cat "$STATE_DIR/acme/live/$CERT_NAME/fullchain.pem" "$STATE_DIR/acme/live/$CERT_NAME/privkey.pem" > "$TMP_DIR/tls.pem"
 printf '%s\n' "$PORT" > "$TMP_DIR/port"
+printf 'standalone\n' > "$TMP_DIR/transport"
 printf '%s\n' "$DOMAIN" > "$TMP_DIR/domain"
 printf '%s\n' "$INIT_SYSTEM" > "$TMP_DIR/init-system"
 if [[ -s "$STATE_DIR/users.db" ]]; then
@@ -163,7 +169,7 @@ install -d -m 0755 /var/backups
 BACKUP_DIR="$(mktemp -d /var/backups/path-socks.XXXXXX)"
 if [[ "$INIT_SYSTEM" == systemd ]]; then UNIT=/etc/systemd/system/path-socks.service; else UNIT=/etc/init.d/path-socks; fi
 FILES=("$APP_DIR/path-socks" "$APP_DIR/port.py" "$APP_DIR/renew.sh" "$APP_DIR/sbb-path" /usr/local/bin/sbb "$UNIT")
-for file in domain port tls.pem users.db init-system; do FILES+=("$STATE_DIR/$file"); done
+for file in domain port tls.pem users.db init-system transport; do FILES+=("$STATE_DIR/$file"); done
 for file in "${FILES[@]}"; do
   printf '%s\n' "$file" >> "$BACKUP_DIR/files"
   if [[ -e "$file" ]]; then
@@ -179,7 +185,7 @@ install -o root -g root -m 0644 "$TMP_DIR/port.py" "$APP_DIR/port.py"
 install -o root -g root -m 0755 "$TMP_DIR/renew.sh" "$APP_DIR/renew.sh"
 install -o root -g root -m 0755 "$TMP_DIR/sbb" /usr/local/bin/sbb
 install -o root -g root -m 0755 "$TMP_DIR/path-manager" "$APP_DIR/sbb-path"
-for file in domain port tls.pem users.db init-system; do
+for file in domain port tls.pem users.db init-system transport; do
   install -o root -g path-socks -m 0640 "$TMP_DIR/$file" "$STATE_DIR/$file.new"
   mv -f "$STATE_DIR/$file.new" "$STATE_DIR/$file"
 done
@@ -201,6 +207,10 @@ for attempt in {1..10}; do
 done
 (( HEALTHY == 1 )) || die "TLS健康检查失败；端口可能刚被其他程序抢占，将恢复旧版本"
 ACTIVATING=0
+if [[ "$OLD_TRANSPORT" == nginx ]]; then
+  if [[ "$INIT_SYSTEM" == systemd ]]; then systemctl disable --now path-socks-nginx; else rc-service path-socks-nginx stop; rc-update del path-socks-nginx default; fi
+  echo '已停用本项目80/443实例；其证书与配置保留，其他Nginx未操作。'
+fi
 echo "已启用。旧版本备份（含私密配置，仅root可读）：$BACKUP_DIR"
 
 echo "[6/7] 配置本项目独立证书续期与防火墙"
