@@ -45,7 +45,11 @@ def main():
                 shutil.copy(stage/'cert.pem',cert/'fullchain.pem');shutil.copy(stage/'key.pem',cert/'privkey.pem')
                 return subprocess.CompletedProcess(args,0)
             return original(*args,**kw)
-        with patch.object(n,'HERE',stage),patch.object(n,'packages',n.check_ports),patch.object(n,'run',fixture),patch.object(n.socket,'getaddrinfo',return_value=[(socket.AF_INET,socket.SOCK_STREAM,6,'',('8.8.8.8',80))]):
+        real_dns=socket.getaddrinfo
+        def dns(host,*args,**kwargs):
+            if host=='gateway.test':return [(socket.AF_INET,socket.SOCK_STREAM,6,'',('8.8.8.8',80))]
+            return real_dns(host,*args,**kwargs)
+        with patch.object(n,'HERE',stage),patch.object(n,'packages',n.check_ports),patch.object(n,'run',fixture),patch.object(n.socket,'getaddrinfo',side_effect=dns):
             n.install('gateway.test')
             assert (n.STATE/'transport').read_text().strip()=='nginx'
             assert (n.STATE/'port').read_text().strip()=='443'
