@@ -21,7 +21,7 @@ def run(*args, **kwargs):
 def interactive_install():
     pid, fd = pty.fork()
     if pid == 0:
-        os.execvpe("bash", ["bash", str(ROOT / "install.sh"), "gateway.test"], os.environ)
+        os.execvpe("bash", ["bash", str(ROOT / "install-path.sh"), "gateway.test"], os.environ)
     os.write(fd, b"\nfixture-token-not-a-real-secret\n")
     deadline = time.monotonic() + 150
     while time.monotonic() < deadline:

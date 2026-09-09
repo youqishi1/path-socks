@@ -27,9 +27,12 @@ def owned_listener(port, pid):
         return False
     try:
         # Reuse an occupied saved port only when the actual gateway owns it.
-        if Path(f"/proc/{pid}/exe").resolve() != Path("/opt/path-socks/path-socks"):
+        if Path(f"/proc/{pid}/exe").resolve() not in (Path("/opt/path-socks/path-socks"), Path("/opt/sbb-reality/xray")):
             return False
-        sockets = {p.readlink().name for p in Path(f"/proc/{pid}/fd").iterdir()}
+        sockets = set()
+        for entry in Path(f"/proc/{pid}/fd").iterdir():
+            try: sockets.add(entry.readlink().name)
+            except OSError: pass  # A connection may close during inspection.
         listeners = []
         for name in ("tcp", "tcp6"):
             for line in Path(f"/proc/net/{name}").read_text().splitlines()[1:]:
