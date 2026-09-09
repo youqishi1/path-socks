@@ -33,6 +33,7 @@ jobs:
           GOOS=linux GOARCH=amd64 go build -buildvcs=false -trimpath -ldflags='-s -w' -o bin/path-socks-linux-amd64 ./cmd/path-socks
           GOOS=linux GOARCH=arm64 go build -buildvcs=false -trimpath -ldflags='-s -w' -o bin/path-socks-linux-arm64 ./cmd/path-socks
           cd bin
-          sha256sum -c ../checksums.txt
+          test "$(wc -l < ../checksums.txt)" -eq 2
+          sha256sum --strict -c ../checksums.txt
       - name: Standalone installer coexistence (local ACME fixture)
         run: sudo --preserve-env=GITHUB_ACTIONS python3 test_install.py
