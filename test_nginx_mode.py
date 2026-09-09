@@ -38,7 +38,7 @@ def main():
                 assert '--webroot' in args and 'cloudflare' not in ' '.join(args)
                 challenge=n.WEBROOT/'.well-known/acme-challenge/fixture'
                 challenge.write_text('http01-ok');challenge.chmod(0o644)
-                reply=original('curl','--noproxy','*','-fsS','--resolve','gateway.test:80:127.0.0.1','http://gateway.test/.well-known/acme-challenge/fixture',capture=True)
+                reply=original('curl','--noproxy','*','-fsS','--retry','3','--retry-connrefused','--resolve','gateway.test:80:127.0.0.1','http://gateway.test/.well-known/acme-challenge/fixture',capture=True)
                 assert reply.stdout=='http01-ok'
                 cert=n.EDGE/'acme/live/path-socks-gateway.test';cert.mkdir(parents=True,exist_ok=True)
                 shutil.copy(stage/'cert.pem',cert/'fullchain.pem');shutil.copy(stage/'key.pem',cert/'privkey.pem')

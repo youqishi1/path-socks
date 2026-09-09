@@ -85,7 +85,7 @@ REALITY服务：`sbb-reality`，程序 `/opt/sbb-reality`，配置 `/etc/sbb-rea
 ## 4. 管理
 
 ```bash
-sbb                 # 双方案菜单
+sbb                 # 统一管理菜单
 sbb reality         # REALITY用户/连接码/端口/启停/日志
 sbb path            # 原Path管理菜单
 sbb status          # 两套服务状态
@@ -93,7 +93,7 @@ sbb status          # 两套服务状态
 
 REALITY添加/删除用户、重置UUID或改端口会重启该方案，现有连接会断开并重连。更新通过顶层菜单3重新选择对应方案，保留已有密钥与用户。启用失败尝试恢复旧文件；备份保存在root私有的 `/var/backups/sbb-reality.*`。
 
-Path证书、Token、安全组和Path格式详见 [Path方案说明](PATH-MODE.md)。该文档的一键命令现在会先显示双方案菜单，应选择2。
+高位Path的证书、Token、安全组和Path格式详见 [Path方案说明](PATH-MODE.md)，安装时选择3。原版80/443选择2，按本文步骤操作，不需要Token。
 
 ## 稳定、速度和兼容边界
 

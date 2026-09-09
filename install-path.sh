@@ -232,6 +232,6 @@ if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; t
 fi
 echo "[7/7] 安装完成：请在云厂商安全组放行 TCP $PORT，并保持域名A记录指向本VPS、灰云。"
 echo "本版监听IPv4；该域名不要配置指向其他地址的AAAA记录。"
-echo "未修改、停止或重载任何Nginx；旧版Nginx配置仍保留，由原管理员按需处理。"
+echo "没有操作系统nginx或其他网站；从原版切换时仅停用本项目path-socks-nginx，配置仍保留。"
 echo "以后输入 sbb 管理；已有客户端务必更新端口。"
 /usr/local/bin/sbb path show

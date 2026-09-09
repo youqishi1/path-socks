@@ -1,5 +1,5 @@
 [Unit]
-Description=Renew only Path SOCKS TLS certificate using Cloudflare DNS
+Description=Renew only the active Path SOCKS TLS certificate
 After=network-online.target
 Wants=network-online.target
 
