@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import shutil
 import socket
+import ssl
 import subprocess
 import tempfile
 from unittest.mock import patch
@@ -49,6 +50,11 @@ def main():
             assert (n.STATE/'transport').read_text().strip()=='nginx'
             assert (n.STATE/'port').read_text().strip()=='443'
             assert (n.STATE/'users.db').read_bytes()==previous
+            context=ssl.create_default_context(cafile=str(stage/'cert.pem'))
+            with socket.create_connection(('127.0.0.1',443),timeout=5) as raw:
+                with context.wrap_socket(raw,server_hostname='gateway.test') as ws:
+                    ws.sendall(b'GET /proxyip=socks5://u:p@8.8.8.8:1080 HTTP/1.1\r\nHost: gateway.test\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n')
+                    assert b'101 Switching Protocols' in ws.recv(4096), 'Literal SOCKS5 Path or WS upgrade was altered'
             n.check_ports()  # Own running master is allowed.
             n.install('gateway.test')
             assert (n.STATE/'users.db').read_bytes()==previous
