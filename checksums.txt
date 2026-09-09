@@ -1,2 +1,2 @@
-3c4c66d0f01b4b99e3f95ecca5c33fac9d8378f7bdb550d30e4b64698c599df9  path-socks-linux-amd64
-39c127c129aeaa16bd2770fa2b09c9b3f67e4453e6063e63c1fa70ceb7af5e05  path-socks-linux-arm64
+2f7cb44b54364cbe60c80777d3da09a5cdddddd999cef93929f57186a02aeb441  path-socks-linux-amd64
+afda415f71c8f4c54458d43d7253fa97c38de9e22f537c883c26cb0ebe33f15e  path-socks-linux-arm64

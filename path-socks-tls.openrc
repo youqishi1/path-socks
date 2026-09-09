@@ -1,9 +1,9 @@
 #!/sbin/openrc-run
 
 name="path-socks"
-description="VLESS WebSocket dynamic SOCKS5 path gateway"
+description="Standalone TLS VLESS WebSocket dynamic SOCKS5 path gateway"
 command="/opt/path-socks/path-socks"
-command_args="-listen 127.0.0.1:18080 -users /etc/path-socks/users.db"
+command_args="-port-file /etc/path-socks/port -tls-pem /etc/path-socks/tls.pem -users /etc/path-socks/users.db"
 command_user="path-socks:path-socks"
 supervisor="supervise-daemon"
 respawn_delay=2

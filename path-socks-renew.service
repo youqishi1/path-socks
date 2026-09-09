@@ -1,0 +1,9 @@
+[Unit]
+Description=Renew only Path SOCKS TLS certificate using Cloudflare DNS
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/path-socks/renew.sh
+UMask=0077

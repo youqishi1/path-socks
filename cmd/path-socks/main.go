@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -17,6 +18,7 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -55,7 +57,29 @@ type vlessRequest struct {
 func main() {
 	listen := flag.String("listen", "127.0.0.1:18080", "HTTP listen address")
 	users := flag.String("users", "/etc/path-socks/users.db", "user UUID database")
+	portFile := flag.String("port-file", "", "public IPv4 TLS port file (requires tls-pem)")
+	pemFile := flag.String("tls-pem", "", "combined certificate chain and private key PEM")
+	check := flag.Bool("check", false, "validate configuration without opening a port")
 	flag.Parse()
+	if *portFile != "" {
+		address, err := publicAddress(*portFile, *pemFile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		*listen = address
+	}
+	var certificates atomic.Pointer[tls.Certificate]
+	if *pemFile != "" {
+		if err := refreshCertificate(*pemFile, &certificates); err != nil {
+			log.Fatal(err)
+		}
+	}
+	if _, err := os.ReadFile(*users); err != nil {
+		log.Fatal(err)
+	}
+	if *check {
+		return
+	}
 
 	app := &gateway{
 		usersFile: *users,
@@ -66,21 +90,33 @@ func main() {
 		},
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		_, _ = io.WriteString(w, "ok\n")
-	})
-	mux.HandleFunc("/", app.handle)
-
 	server := &http.Server{
 		Addr:              *listen,
-		Handler:           mux,
+		Handler:           http.HandlerFunc(app.serveHTTP),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       120 * time.Second,
 		MaxHeaderBytes:    8 * 1024,
 		ErrorLog:          log.New(io.Discard, "", 0),
+	}
+	if *pemFile != "" {
+		server.TLSConfig = &tls.Config{
+			MinVersion: tls.VersionTLS12,
+			NextProtos: []string{"http/1.1"},
+			GetCertificate: func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+				return certificates.Load(), nil
+			},
+		}
+		// Disable HTTP/2: the client protocol here is HTTP/1.1 WebSocket upgrade.
+		server.TLSNextProto = make(map[string]func(*http.Server, *tls.Conn, http.Handler))
+		go func() {
+			ticker := time.NewTicker(time.Minute)
+			defer ticker.Stop()
+			for range ticker.C {
+				if err := refreshCertificate(*pemFile, &certificates); err != nil {
+					log.Print("certificate reload failed; retaining previous certificate")
+				}
+			}
+		}()
 	}
 
 	stop := make(chan os.Signal, 1)
@@ -93,9 +129,57 @@ func main() {
 	}()
 
 	log.Printf("path-socks listening on %s", *listen)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+	var err error
+	if *pemFile != "" {
+		err = server.ListenAndServeTLS("", "")
+	} else {
+		err = server.ListenAndServe()
+	}
+	if err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatal(err)
 	}
+}
+
+func publicAddress(portFile, pemFile string) (string, error) {
+	if pemFile == "" {
+		return "", errors.New("public port requires a TLS certificate")
+	}
+	data, err := os.ReadFile(portFile)
+	if err != nil {
+		return "", err
+	}
+	port, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || port < 10240 || port > 65535 {
+		return "", errors.New("public port must be between 10240 and 65535")
+	}
+	return net.JoinHostPort("0.0.0.0", strconv.Itoa(port)), nil
+}
+
+func refreshCertificate(path string, destination *atomic.Pointer[tls.Certificate]) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	certificate, err := tls.X509KeyPair(data, data)
+	if err != nil {
+		return err
+	}
+	if certificate.Leaf != nil && (time.Now().Before(certificate.Leaf.NotBefore) || time.Now().After(certificate.Leaf.NotAfter)) {
+		return errors.New("TLS certificate is not currently valid")
+	}
+	destination.Store(&certificate)
+	return nil
+}
+
+func (g *gateway) serveHTTP(w http.ResponseWriter, r *http.Request) {
+	// ServeMux cleans double slashes, which would redirect a literal socks5:// Path.
+	if r.URL.Path == "/health" {
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = io.WriteString(w, "ok\n")
+		return
+	}
+	g.handle(w, r)
 }
 
 func (g *gateway) handle(w http.ResponseWriter, r *http.Request) {

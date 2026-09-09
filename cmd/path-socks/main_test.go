@@ -3,14 +3,22 @@ package main
 import (
 	"bufio"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,15 +43,18 @@ func TestGateway32Concurrent(t *testing.T) {
 	defer func() { resolveProxyIP = originalResolver }()
 
 	app := &gateway{usersFile: users, upgrader: websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}}
-	server := httptest.NewServer(http.HandlerFunc(app.handle))
+	server := httptest.NewTLSServer(http.HandlerFunc(app.serveHTTP))
 	defer server.Close()
+	pool := x509.NewCertPool()
+	pool.AddCert(server.Certificate())
+	dialer := &websocket.Dialer{TLSClientConfig: &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}, HandshakeTimeout: 5 * time.Second}
 
 	socksPort := socks.Addr().(*net.TCPAddr).Port
 	wsURL := "ws" + server.URL[4:] + "/proxyip=socks5://127.0.0.1:" + fmt.Sprint(socksPort)
 	target := echo.Addr().(*net.TCPAddr)
 	errors := make(chan error, 32)
 	for i := 0; i < 32; i++ {
-		go func() { errors <- gatewayRoundTrip(wsURL, target.Port) }()
+		go func() { errors <- gatewayRoundTrip(dialer, wsURL, target.Port) }()
 	}
 	for i := 0; i < 32; i++ {
 		if err := <-errors; err != nil {
@@ -52,8 +63,8 @@ func TestGateway32Concurrent(t *testing.T) {
 	}
 }
 
-func gatewayRoundTrip(wsURL string, targetPort int) error {
-	ws, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+func gatewayRoundTrip(dialer *websocket.Dialer, wsURL string, targetPort int) error {
+	ws, _, err := dialer.Dial(wsURL, nil)
 	if err != nil {
 		return err
 	}
@@ -74,6 +85,67 @@ func gatewayRoundTrip(wsURL string, targetPort int) error {
 		return fmt.Errorf("unexpected response %q", response)
 	}
 	return nil
+}
+
+func TestPublicPortValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "port")
+	for _, value := range []string{"80", "443", "-1", "65536", "garbage", "25443\n"} {
+		if err := os.WriteFile(path, []byte(value), 0600); err != nil {
+			t.Fatal(err)
+		}
+		address, err := publicAddress(path, "tls.pem")
+		if value == "25443\n" {
+			if err != nil || address != "0.0.0.0:25443" {
+				t.Fatalf("%s %v", address, err)
+			}
+		} else if err == nil {
+			t.Fatalf("accepted invalid port %q", value)
+		}
+	}
+	if _, err := publicAddress(path, ""); err == nil {
+		t.Fatal("allowed public port without TLS")
+	}
+}
+
+func TestCertificateReloadPreservesLastValid(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "tls.pem")
+	var current atomic.Pointer[tls.Certificate]
+	for _, serial := range []int64{1, 2} {
+		key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		template := &x509.Certificate{SerialNumber: big.NewInt(serial), NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), DNSNames: []string{"localhost"}}
+		der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		keyDER, err := x509.MarshalECPrivateKey(key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data := append(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})...)
+		if err := os.WriteFile(path, data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := refreshCertificate(path, &current); err != nil {
+			t.Fatal(err)
+		}
+		leaf, err := x509.ParseCertificate(current.Load().Certificate[0])
+		if err != nil || leaf.SerialNumber.Int64() != serial {
+			t.Fatal("certificate did not rotate")
+		}
+	}
+	previous := current.Load()
+	if err := os.WriteFile(path, []byte("incomplete PEM"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := refreshCertificate(path, &current); err == nil {
+		t.Fatal("accepted broken certificate")
+	}
+	if current.Load() != previous {
+		t.Fatal("lost valid certificate on failed reload")
+	}
 }
 
 func TestPrivateProxyBlocked(t *testing.T) {

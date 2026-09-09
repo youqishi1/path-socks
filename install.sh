@@ -1,220 +1,226 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
+umask 077
 
-RAW_BASE="https://raw.githubusercontent.com/youqishi1/path-socks/main"
-APP_DIR="/opt/path-socks"
-STATE_DIR="/etc/path-socks"
-USERS_FILE="$STATE_DIR/users.db"
-DOMAIN_FILE="$STATE_DIR/domain"
-NGINX_PATH_FILE="$STATE_DIR/nginx-site"
-INIT_FILE="$STATE_DIR/init-system"
+APP_DIR=/opt/path-socks
+STATE_DIR=/etc/path-socks
 TMP_DIR="$(mktemp -d /tmp/path-socks-install.XXXXXX)"
-trap '[[ -n "${TMP_DIR:-}" && "$TMP_DIR" == /tmp/path-socks-install.* ]] && rm -rf -- "$TMP_DIR"' EXIT
-
+ACTIVATING=0
+BACKUP_DIR=""
 die() { echo "错误：$*" >&2; exit 1; }
-
-[[ "$EUID" -eq 0 ]] || die "请使用root用户运行"
-[[ "$(uname -s)" == "Linux" ]] || die "目前只支持Linux VPS"
-
+cleanup() {
+  local result=$?
+  trap - EXIT
+  if (( result != 0 && ACTIVATING == 1 )); then
+    echo "启用失败，正在恢复本项目的程序和配置：$BACKUP_DIR" >&2
+    while IFS= read -r file; do
+      if [[ -e "$BACKUP_DIR$file" ]]; then
+        cp -a -- "$BACKUP_DIR$file" "$file.rollback"
+        mv -f -- "$file.rollback" "$file"
+      else
+        rm -f -- "$file"
+      fi
+    done < "$BACKUP_DIR/files"
+    if [[ "$INIT_SYSTEM" == systemd ]]; then systemctl daemon-reload; fi
+    if [[ -e "$BACKUP_DIR$APP_DIR/path-socks" ]]; then
+      restart_core || true
+    else
+      if [[ "$INIT_SYSTEM" == systemd ]]; then
+        systemctl disable --now path-socks 2>/dev/null || true
+      else
+        rc-service path-socks stop 2>/dev/null || true
+        rc-update del path-socks default 2>/dev/null || true
+      fi
+    fi
+    echo "证书申请资料和备份保留在本机；没有操作Nginx。" >&2
+  fi
+  [[ "$TMP_DIR" == /tmp/path-socks-install.* ]] && rm -rf -- "$TMP_DIR"
+  exit "$result"
+}
+trap cleanup EXIT
+[[ "$EUID" -eq 0 ]] || die "请使用root运行"
+[[ "$(uname -s)" == Linux ]] || die "仅支持Linux"
 case "$(uname -m)" in
-  x86_64|amd64) ARCH="amd64" ;;
-  aarch64|arm64) ARCH="arm64" ;;
-  *) die "暂不支持该CPU架构：$(uname -m)" ;;
+  x86_64|amd64) ARCH=amd64 ;;
+  aarch64|arm64) ARCH=arm64 ;;
+  *) die "CPU架构不支持" ;;
 esac
-
-install_packages() {
-  if command -v apt-get >/dev/null 2>&1; then
-    apt-get update
-    DEBIAN_FRONTEND=noninteractive apt-get install -y nginx certbot python3-certbot-nginx ca-certificates curl
-  elif command -v dnf >/dev/null 2>&1; then
-    dnf install -y nginx certbot python3-certbot-nginx ca-certificates curl
-  elif command -v yum >/dev/null 2>&1; then
-    yum install -y epel-release || true
-    yum install -y nginx certbot python3-certbot-nginx ca-certificates curl
-  elif command -v apk >/dev/null 2>&1; then
-    apk add --no-cache nginx certbot certbot-nginx ca-certificates curl bash python3
-  elif command -v zypper >/dev/null 2>&1; then
-    zypper --non-interactive install nginx certbot python3-certbot-nginx ca-certificates curl python3
-  else
-    die "不支持该系统的软件包管理器"
-  fi
-}
-
-detect_init() {
-  if command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]]; then
-    INIT_SYSTEM="systemd"
-  elif command -v rc-service >/dev/null 2>&1; then
-    INIT_SYSTEM="openrc"
-  else
-    die "只支持systemd或OpenRC服务管理器"
-  fi
-}
-
-service_enable_start() {
-  local name="$1"
-  if [[ "$INIT_SYSTEM" == "systemd" ]]; then
-    systemctl enable --now "$name"
-  else
-    rc-update add "$name" default >/dev/null 2>&1 || true
-    rc-service "$name" restart 2>/dev/null || rc-service "$name" start
-  fi
-}
-
-service_restart() {
-  if [[ "$INIT_SYSTEM" == "systemd" ]]; then systemctl restart "$1"; else rc-service "$1" restart; fi
+if command -v systemctl >/dev/null && [[ -d /run/systemd/system ]]; then
+  INIT_SYSTEM=systemd
+elif command -v rc-service >/dev/null; then
+  INIT_SYSTEM=openrc
+else
+  die "需要systemd或OpenRC"
+fi
+restart_core() {
+  if [[ "$INIT_SYSTEM" == systemd ]]; then systemctl restart path-socks; else rc-service path-socks restart; fi
 }
 
 DOMAIN="${1:-}"
-if [[ -z "$DOMAIN" && -s "$DOMAIN_FILE" ]]; then
-  OLD_DOMAIN="$(tr -d '\r\n' < "$DOMAIN_FILE")"
-  read -r -p "请输入域名（直接回车继续使用 $OLD_DOMAIN）：" DOMAIN </dev/tty
+OLD_DOMAIN=""
+[[ ! -s "$STATE_DIR/domain" ]] || OLD_DOMAIN="$(tr -d '\r\n' < "$STATE_DIR/domain")"
+if [[ -z "$DOMAIN" ]]; then
+  read -r -p "域名（灰云，回车沿用 ${OLD_DOMAIN:-无}）：" DOMAIN </dev/tty
   DOMAIN="${DOMAIN:-$OLD_DOMAIN}"
-elif [[ -z "$DOMAIN" ]]; then
-  read -r -p "请输入已经解析到本VPS的域名：" DOMAIN </dev/tty
 fi
-DOMAIN="$(printf '%s' "$DOMAIN" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
-[[ "$DOMAIN" =~ ^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$ ]] || die "域名格式不正确"
+DOMAIN="$(printf '%s' "$DOMAIN" | tr '[:upper:]' '[:lower:]')"
+[[ "$DOMAIN" =~ ^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$ && ${#DOMAIN} -le 253 ]] || die "域名格式不正确"
 
-echo "[1/9] 自动识别系统并安装组件"
-install_packages
-detect_init
-
-if [[ -d /etc/nginx/sites-available ]]; then
-  NGINX_SITE="/etc/nginx/sites-available/path-socks"
-  NGINX_LINK="/etc/nginx/sites-enabled/path-socks"
-elif [[ -d /etc/nginx/http.d ]]; then
-  NGINX_SITE="/etc/nginx/http.d/path-socks.conf"
-  NGINX_LINK=""
+echo "[1/7] 安装DNS证书组件（不安装、不操作Nginx）"
+if command -v apt-get >/dev/null; then
+  apt-get update
+  DEBIAN_FRONTEND=noninteractive apt-get install -y certbot python3-certbot-dns-cloudflare ca-certificates curl python3 iproute2 util-linux
+elif command -v dnf >/dev/null; then
+  dnf install -y certbot python3-certbot-dns-cloudflare ca-certificates curl python3 iproute util-linux
+elif command -v yum >/dev/null; then
+  yum install -y certbot python3-certbot-dns-cloudflare ca-certificates curl python3 iproute util-linux
+elif command -v apk >/dev/null; then
+  apk add --no-cache certbot certbot-dns-cloudflare ca-certificates curl bash python3 iproute2 util-linux
+elif command -v zypper >/dev/null; then
+  zypper --non-interactive install certbot python3-certbot-dns-cloudflare ca-certificates curl python3 iproute2 util-linux
 else
-  install -d -m 0755 /etc/nginx/conf.d
-  NGINX_SITE="/etc/nginx/conf.d/path-socks.conf"
-  NGINX_LINK=""
+  die "未知包管理器"
 fi
+certbot plugins | grep -q dns-cloudflare || die "系统软件源没有提供Cloudflare插件，请启用对应软件源后重试"
+exec 9>/run/path-socks-maintenance.lock
+flock -n 9 || die "其他安装、改端口或续期操作正在运行，请稍后再试"
 
-echo "[2/9] 检查域名解析"
-PUBLIC_IP="$(curl -4fsS --max-time 10 https://api.ipify.org || true)"
-DOMAIN_IP="$(getent ahostsv4 "$DOMAIN" 2>/dev/null | awk 'NR==1 {print $1}' || true)"
-if [[ -z "$DOMAIN_IP" ]]; then
-  DOMAIN_IP="$(python3 - "$DOMAIN" 2>/dev/null <<'PY' || true
-import socket, sys
-print(socket.gethostbyname(sys.argv[1]))
-PY
-)"
-fi
-echo "VPS公网IPv4：${PUBLIC_IP:-获取失败}"
-echo "域名解析IPv4：${DOMAIN_IP:-获取失败}"
-[[ -n "$DOMAIN_IP" ]] || die "域名暂时没有IPv4解析记录"
-if [[ -n "$PUBLIC_IP" && "$PUBLIC_IP" != "$DOMAIN_IP" ]]; then
-  die "域名没有直接解析到本VPS；请设置A记录并关闭Cloudflare代理（灰云）"
-fi
-
-echo "[3/9] 下载轻量静态核心"
-for FILE in nginx.conf.template nginx-tls.conf.template path-socks.service path-socks.openrc sbb; do
-  curl -fL --retry 3 --connect-timeout 10 "$RAW_BASE/$FILE" -o "$TMP_DIR/$FILE"
+echo "[2/7] 下载同一提交的组件并校验核心"
+RELEASE="$(curl -fsSL --retry 3 --connect-timeout 10 --max-time 60 https://api.github.com/repos/youqishi1/path-socks/commits/main | python3 -c 'import json,sys; print(json.load(sys.stdin)["sha"])')"
+[[ "$RELEASE" =~ ^[0-9a-f]{40}$ ]] || die "无法取得发布版本"
+RAW_BASE="https://raw.githubusercontent.com/youqishi1/path-socks/$RELEASE"
+for file in path-socks-tls.service path-socks-tls.openrc sbb port.py renew.sh path-socks-renew.service path-socks-renew.timer checksums.txt; do
+  curl -fsSL --retry 3 --connect-timeout 10 --max-time 120 "$RAW_BASE/$file" -o "$TMP_DIR/$file"
 done
-curl -fL --retry 3 --connect-timeout 10 "$RAW_BASE/bin/path-socks-linux-$ARCH" -o "$TMP_DIR/path-socks"
-curl -fL --retry 3 --connect-timeout 10 "$RAW_BASE/checksums.txt" -o "$TMP_DIR/checksums.txt"
-EXPECTED_HASH="$(awk -v name="path-socks-linux-$ARCH" '$2==name {print $1}' "$TMP_DIR/checksums.txt")"
-ACTUAL_HASH="$(sha256sum "$TMP_DIR/path-socks" | awk '{print $1}')"
-[[ -n "$EXPECTED_HASH" && "$ACTUAL_HASH" == "$EXPECTED_HASH" ]] || die "核心文件校验失败，已停止安装"
+curl -fsSL --retry 3 --connect-timeout 10 --max-time 180 "$RAW_BASE/bin/path-socks-linux-$ARCH" -o "$TMP_DIR/path-socks"
+EXPECTED="$(awk -v name="path-socks-linux-$ARCH" '$2==name {print $1}' "$TMP_DIR/checksums.txt")"
+ACTUAL="$(sha256sum "$TMP_DIR/path-socks" | awk '{print $1}')"
+[[ -n "$EXPECTED" && "$EXPECTED" == "$ACTUAL" ]] || die "核心校验失败"
 chmod 0755 "$TMP_DIR/path-socks"
+"$TMP_DIR/path-socks" -h >/dev/null 2>&1
 
-echo "[4/9] 创建本机私密配置"
+echo "[3/7] 选择独立高位端口"
+SAVED_PORT=25443
+[[ ! -s "$STATE_DIR/port" ]] || SAVED_PORT="$(tr -d '\r\n' < "$STATE_DIR/port")"
+PORT_INPUT="${2:-}"
+if [[ -z "$PORT_INPUT" ]]; then
+  read -r -p "TLS端口（回车使用 $SAVED_PORT，占用则自动换空闲端口）：" PORT_INPUT </dev/tty
+fi
+PID=0
+if [[ "$INIT_SYSTEM" == systemd ]]; then
+  PID="$(systemctl show path-socks -p MainPID --value 2>/dev/null || true)"
+else
+  PID="$(pgrep -x path-socks 2>/dev/null | head -n 1 || true)"
+fi
+[[ "$PID" =~ ^[0-9]+$ ]] || PID=0
+PORT_ARGS=("${PORT_INPUT:-$SAVED_PORT}" --pid "$PID")
+[[ -z "$PORT_INPUT" ]] || PORT_ARGS+=(--explicit)
+PORT="$(python3 "$TMP_DIR/port.py" "${PORT_ARGS[@]}")"
+echo "本次使用 TCP $PORT；不会占用80、443或18080。"
+
+echo "[4/7] Cloudflare DNS验证申请证书（无需开放80/443）"
 if ! id path-socks >/dev/null 2>&1; then
-  if command -v useradd >/dev/null 2>&1; then
-    useradd --system --home-dir "$APP_DIR" --shell /usr/sbin/nologin path-socks
+  if command -v useradd >/dev/null; then
+    getent group path-socks >/dev/null || groupadd --system path-socks
+    useradd --system --gid path-socks --home-dir "$APP_DIR" --shell /usr/sbin/nologin path-socks
   else
-    adduser -S -D -H -s /sbin/nologin path-socks
+    addgroup -S path-socks
+    adduser -S -D -H -G path-socks -s /sbin/nologin path-socks
   fi
 fi
 install -d -o root -g path-socks -m 0750 "$STATE_DIR"
-printf '%s\n' "$DOMAIN" > "$DOMAIN_FILE"
-printf '%s\n' "$NGINX_SITE" > "$NGINX_PATH_FILE"
-printf '%s\n' "$INIT_SYSTEM" > "$INIT_FILE"
-chmod 0600 "$DOMAIN_FILE" "$NGINX_PATH_FILE" "$INIT_FILE"
-
-if [[ ! -s "$USERS_FILE" ]]; then
-  OLD_UUIDS=""
-  if [[ -s "$APP_DIR/config.capnp" ]]; then
-    OLD_UUIDS="$(sed -n 's/.*UUIDS", text = "\([^"]*\)".*/\1/p' "$APP_DIR/config.capnp" | head -n 1)"
-  fi
-  : > "$USERS_FILE"
-  if [[ -n "$OLD_UUIDS" ]]; then
-    IFS=',' read -ra UUID_ARRAY <<< "$OLD_UUIDS"
-    for i in "${!UUID_ARRAY[@]}"; do
-      printf '用户%02d|%s\n' "$((i + 1))" "${UUID_ARRAY[$i]}" >> "$USERS_FILE"
-    done
-  else
-    for i in $(seq 1 10); do
-      printf '用户%02d|%s\n' "$i" "$(cat /proc/sys/kernel/random/uuid)" >> "$USERS_FILE"
-    done
-  fi
+install -d -o root -g root -m 0700 "$STATE_DIR/acme" /var/lib/path-socks-acme /var/log/path-socks-acme
+echo "Token仅需目标Zone的DNS编辑权限；不要使用Global API Key。"
+echo "输入不会显示；已有Token可直接回车沿用。请勿把Token发到聊天中。"
+read -r -s -p "Cloudflare API Token：" CF_TOKEN </dev/tty
+echo
+if [[ -n "$CF_TOKEN" ]]; then
+  [[ "$CF_TOKEN" =~ ^[A-Za-z0-9_-]+$ ]] || die "Token格式不正确"
+  printf 'dns_cloudflare_api_token = %s\n' "$CF_TOKEN" > "$STATE_DIR/cloudflare.ini.new"
+  chmod 0600 "$STATE_DIR/cloudflare.ini.new"
+  mv -f "$STATE_DIR/cloudflare.ini.new" "$STATE_DIR/cloudflare.ini"
 fi
-chown root:path-socks "$USERS_FILE"
-chmod 0640 "$USERS_FILE"
-
-echo "[5/9] 安装服务和sbb管理命令"
-install -d -o path-socks -g path-socks -m 0750 "$APP_DIR"
-install -o root -g root -m 0755 "$TMP_DIR/path-socks" "$APP_DIR/path-socks"
-install -o root -g root -m 0644 "$TMP_DIR/nginx.conf.template" "$APP_DIR/nginx.conf.template"
-install -o root -g root -m 0644 "$TMP_DIR/nginx-tls.conf.template" "$APP_DIR/nginx-tls.conf.template"
-install -o root -g root -m 0755 "$TMP_DIR/sbb" /usr/local/bin/sbb
-if [[ -f /usr/local/bin/sb ]] && grep -q 'youqishi1/path-socks' /usr/local/bin/sb 2>/dev/null; then
-  rm -f /usr/local/bin/sb
-fi
-
-if [[ "$INIT_SYSTEM" == "systemd" ]]; then
-  install -m 0644 "$TMP_DIR/path-socks.service" /etc/systemd/system/path-socks.service
-  systemctl daemon-reload
+unset CF_TOKEN
+[[ -s "$STATE_DIR/cloudflare.ini" ]] || die "DNS验证需要Cloudflare Token"
+chmod 0600 "$STATE_DIR/cloudflare.ini"
+CERT_NAME="path-socks-$DOMAIN"
+certbot certonly --config-dir "$STATE_DIR/acme" --work-dir /var/lib/path-socks-acme --logs-dir /var/log/path-socks-acme \
+  --dns-cloudflare --dns-cloudflare-credentials "$STATE_DIR/cloudflare.ini" --dns-cloudflare-propagation-seconds 60 \
+  --cert-name "$CERT_NAME" -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email --keep-until-expiring
+cat "$STATE_DIR/acme/live/$CERT_NAME/fullchain.pem" "$STATE_DIR/acme/live/$CERT_NAME/privkey.pem" > "$TMP_DIR/tls.pem"
+printf '%s\n' "$PORT" > "$TMP_DIR/port"
+printf '%s\n' "$DOMAIN" > "$TMP_DIR/domain"
+printf '%s\n' "$INIT_SYSTEM" > "$TMP_DIR/init-system"
+if [[ -s "$STATE_DIR/users.db" ]]; then
+  cp -a "$STATE_DIR/users.db" "$TMP_DIR/users.db"
 else
-  install -m 0755 "$TMP_DIR/path-socks.openrc" /etc/init.d/path-socks
+  for i in $(seq 1 10); do printf '用户%02d|%s\n' "$i" "$(cat /proc/sys/kernel/random/uuid)"; done > "$TMP_DIR/users.db"
 fi
+"$TMP_DIR/path-socks" -check -port-file "$TMP_DIR/port" -tls-pem "$TMP_DIR/tls.pem" -users "$TMP_DIR/users.db"
 
-# 清理旧workerd版本，降低磁盘和常驻内存占用。
-if [[ -d "$APP_DIR/node_modules" ]]; then rm -rf -- "$APP_DIR/node_modules"; fi
-rm -f "$APP_DIR/package.json" "$APP_DIR/package-lock.json" "$APP_DIR/config.capnp" "$APP_DIR/config.capnp.template" "$APP_DIR/worker.js"
-
-service_enable_start path-socks
-sleep 2
-curl -fsS --max-time 5 http://127.0.0.1:18080/health >/dev/null || die "核心没有正常启动"
-
-echo "[6/9] 配置Nginx"
-sed "s/__DOMAIN__/$DOMAIN/g" "$APP_DIR/nginx.conf.template" > "$NGINX_SITE"
-if [[ -n "$NGINX_LINK" ]]; then ln -sfn "$NGINX_SITE" "$NGINX_LINK"; fi
-nginx -t
-service_enable_start nginx
-service_restart nginx
-
-echo "[7/9] 申请TLS证书"
-certbot certonly --nginx -d "$DOMAIN" --non-interactive --agree-tos --register-unsafely-without-email
-sed "s/__DOMAIN__/$DOMAIN/g" "$APP_DIR/nginx-tls.conf.template" > "$NGINX_SITE"
-nginx -t
-service_restart nginx
-
-echo "[8/9] 防火墙和网络稳定性优化"
-if command -v ufw >/dev/null 2>&1 && ufw status | grep -q '^Status: active'; then
-  ufw allow 80/tcp
-  ufw allow 443/tcp
+echo "[5/7] 备份旧版本并启用独立TLS服务"
+install -d -m 0755 /var/backups
+BACKUP_DIR="$(mktemp -d /var/backups/path-socks.XXXXXX)"
+if [[ "$INIT_SYSTEM" == systemd ]]; then UNIT=/etc/systemd/system/path-socks.service; else UNIT=/etc/init.d/path-socks; fi
+FILES=("$APP_DIR/path-socks" "$APP_DIR/port.py" "$APP_DIR/renew.sh" /usr/local/bin/sbb "$UNIT")
+for file in domain port tls.pem users.db init-system; do FILES+=("$STATE_DIR/$file"); done
+for file in "${FILES[@]}"; do
+  printf '%s\n' "$file" >> "$BACKUP_DIR/files"
+  if [[ -e "$file" ]]; then
+    mkdir -p "$BACKUP_DIR$(dirname "$file")"
+    cp -a -- "$file" "$BACKUP_DIR$file"
+  fi
+done
+ACTIVATING=1
+install -d -o root -g path-socks -m 0750 "$APP_DIR"
+install -o root -g root -m 0755 "$TMP_DIR/path-socks" "$APP_DIR/path-socks.new"
+mv -f "$APP_DIR/path-socks.new" "$APP_DIR/path-socks"
+install -o root -g root -m 0644 "$TMP_DIR/port.py" "$APP_DIR/port.py"
+install -o root -g root -m 0755 "$TMP_DIR/renew.sh" "$APP_DIR/renew.sh"
+install -o root -g root -m 0755 "$TMP_DIR/sbb" /usr/local/bin/sbb
+for file in domain port tls.pem users.db init-system; do
+  install -o root -g path-socks -m 0640 "$TMP_DIR/$file" "$STATE_DIR/$file.new"
+  mv -f "$STATE_DIR/$file.new" "$STATE_DIR/$file"
+done
+if [[ "$INIT_SYSTEM" == systemd ]]; then
+  install -m 0644 "$TMP_DIR/path-socks-tls.service" "$UNIT"
+  systemctl daemon-reload
+  systemctl enable path-socks
+else
+  install -m 0755 "$TMP_DIR/path-socks-tls.openrc" "$UNIT"
+  rc-update add path-socks default
 fi
-if command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
-  firewall-cmd --permanent --add-service=http
-  firewall-cmd --permanent --add-service=https
-  firewall-cmd --reload
-fi
-if command -v getenforce >/dev/null 2>&1 && [[ "$(getenforce)" == "Enforcing" ]] && command -v setsebool >/dev/null 2>&1; then
-  setsebool -P httpd_can_network_connect 1
-fi
-if modprobe tcp_bbr 2>/dev/null; then
-  install -d -m 0755 /etc/modules-load.d /etc/sysctl.d
-  printf '%s\n' tcp_bbr > /etc/modules-load.d/path-socks-bbr.conf
-  printf '%s\n' 'net.core.default_qdisc=fq' 'net.ipv4.tcp_congestion_control=bbr' 'net.core.somaxconn=4096' 'net.ipv4.tcp_keepalive_time=300' > /etc/sysctl.d/99-path-socks.conf
-  sysctl --system >/dev/null 2>&1 || true
-fi
+restart_core
+HEALTHY=0
+for attempt in {1..10}; do
+  if [[ "$(curl --noproxy '*' -fsS --max-time 3 --resolve "$DOMAIN:$PORT:127.0.0.1" "https://$DOMAIN:$PORT/health" 2>/dev/null || true)" == ok ]]; then
+    HEALTHY=1; break
+  fi
+  sleep 1
+done
+(( HEALTHY == 1 )) || die "TLS健康检查失败；端口可能刚被其他程序抢占，将恢复旧版本"
+ACTIVATING=0
+echo "已启用。旧版本备份（含私密配置，仅root可读）：$BACKUP_DIR"
 
-echo "[9/9] 完成"
-echo
-echo "以后登录SSH输入以下命令即可管理："
-echo
-echo "    sbb"
-echo
+echo "[6/7] 配置本项目独立证书续期与防火墙"
+if [[ "$INIT_SYSTEM" == systemd ]]; then
+  install -m 0644 "$TMP_DIR/path-socks-renew.service" /etc/systemd/system/path-socks-renew.service
+  install -m 0644 "$TMP_DIR/path-socks-renew.timer" /etc/systemd/system/path-socks-renew.timer
+  systemctl daemon-reload
+  systemctl enable --now path-socks-renew.timer
+else
+  [[ -d /etc/periodic/daily ]] || die "当前OpenRC发行版缺少daily目录，请手动配置每天执行 /opt/path-socks/renew.sh"
+  install -m 0755 "$TMP_DIR/renew.sh" /etc/periodic/daily/path-socks-renew
+  rc-update add crond default
+  rc-service crond start
+fi
+if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then ufw allow "$PORT/tcp"; fi
+if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
+  firewall-cmd --permanent --add-port="$PORT/tcp"
+  firewall-cmd --add-port="$PORT/tcp"
+fi
+echo "[7/7] 安装完成：请在云厂商安全组放行 TCP $PORT，并保持域名A记录指向本VPS、灰云。"
+echo "本版监听IPv4；该域名不要配置指向其他地址的AAAA记录。"
+echo "未修改、停止或重载任何Nginx；旧版Nginx配置仍保留，由原管理员按需处理。"
+echo "以后输入 sbb 管理；已有客户端务必更新端口。"
 /usr/local/bin/sbb show

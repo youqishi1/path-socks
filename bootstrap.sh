@@ -19,5 +19,5 @@ fi
 
 TMP="$(mktemp /tmp/path-socks-install.XXXXXX)"
 trap 'rm -f -- "$TMP"' EXIT INT TERM
-curl -fL --retry 3 --connect-timeout 10 "$RAW" -o "$TMP"
+curl -fL --retry 3 --connect-timeout 10 --max-time 120 "$RAW" -o "$TMP"
 bash "$TMP"

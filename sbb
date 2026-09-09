@@ -6,7 +6,7 @@ APP_DIR="/opt/path-socks"
 STATE_DIR="/etc/path-socks"
 USERS_FILE="$STATE_DIR/users.db"
 DOMAIN_FILE="$STATE_DIR/domain"
-NGINX_PATH_FILE="$STATE_DIR/nginx-site"
+PORT_FILE="$STATE_DIR/port"
 INIT_FILE="$STATE_DIR/init-system"
 
 red='\033[31m'; green='\033[32m'; cyan='\033[36m'; reset='\033[0m'
@@ -15,7 +15,7 @@ say_err() { printf "${red}%s${reset}\n" "$*" >&2; }
 pause_menu() { read -r -p "按回车键继续..." _ </dev/tty; }
 require_root() { [[ "$EUID" -eq 0 ]] || { say_err "请使用root用户运行sbb"; exit 1; }; }
 domain() { tr -d '\r\n' < "$DOMAIN_FILE"; }
-nginx_site() { tr -d '\r\n' < "$NGINX_PATH_FILE"; }
+port() { tr -d '\r\n' < "$PORT_FILE"; }
 init_system() { tr -d '\r\n' < "$INIT_FILE"; }
 
 service_restart() {
@@ -49,7 +49,7 @@ show_config() {
   echo
   printf "${cyan}VLESS通用参数${reset}\n"
   echo "地址：$d"
-  echo "端口：443"
+  echo "端口：$(port)"
   echo "加密：none"
   echo "传输：WebSocket（ws）"
   echo "TLS：开启"
@@ -123,57 +123,90 @@ reset_user() {
   say_ok "重置成功：$label  $uuid"
 }
 
-change_domain() {
-  local old new public_ip domain_ip site backup
-  old="$(domain)"
-  site="$(nginx_site)"
-  read -r -p "请输入新域名：" new </dev/tty
-  new="$(printf '%s' "$new" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
-  validate_domain "$new" || { say_err "域名格式不正确"; return; }
-  public_ip="$(curl -4fsS --max-time 10 https://api.ipify.org || true)"
-  domain_ip="$(getent ahostsv4 "$new" 2>/dev/null | awk 'NR==1{print $1}' || true)"
-  if [[ -z "$domain_ip" ]]; then
-    domain_ip="$(python3 - "$new" 2>/dev/null <<'PY' || true
-import socket, sys
-print(socket.gethostbyname(sys.argv[1]))
-PY
-)"
+run_installer() {
+  local tmp result
+  tmp="$(mktemp /tmp/path-socks-reinstall.XXXXXX)"
+  if ! curl -fsSL --retry 3 --connect-timeout 10 --max-time 120 "$RAW_BASE/install.sh" -o "$tmp"; then
+    rm -f -- "$tmp"; say_err "下载失败，未修改现有程序"; return 1
   fi
-  [[ -n "$domain_ip" ]] || { say_err "新域名没有IPv4解析"; return; }
-  if [[ -n "$public_ip" && "$public_ip" != "$domain_ip" ]]; then
-    say_err "新域名没有直接解析到本VPS，或Cloudflare仍是橙云"
-    return
-  fi
+  # Run a fresh interpreter; successful upgrades replace this manager on disk.
+  result=0
+  bash "$tmp" "$@" || result=$?
+  rm -f -- "$tmp"
+  return "$result"
+}
 
-  backup="$(mktemp /tmp/path-socks-nginx.XXXXXX)"
-  cp -a "$site" "$backup"
-  sed "s/__DOMAIN__/$new/g" "$APP_DIR/nginx.conf.template" > "$site"
-  if ! nginx -t || ! service_restart nginx || ! certbot certonly --nginx -d "$new" --non-interactive --agree-tos --register-unsafely-without-email; then
-    cp -a "$backup" "$site"
-    nginx -t && service_restart nginx
-    rm -f -- "$backup"
-    say_err "更换失败，已恢复原域名 $old"
+change_domain() {
+  local new
+  read -r -p "新域名（新Zone需要相应DNS Token）：" new </dev/tty
+  validate_domain "$new" || { say_err "域名格式不正确"; return; }
+  run_installer "$new" || say_err "更换未完成，请查看上方错误"
+}
+
+change_port() (
+  exec 9>/run/path-socks-maintenance.lock
+  flock -n 9 || { say_err "安装或证书维护正在进行，请稍后重试"; return 1; }
+  local old new
+  old="$(port)"
+  read -r -p "新端口10240—65535（回车自动选择）：" new </dev/tty
+  if [[ -n "$new" && "$new" == "$old" ]]; then echo "端口未改变"; return; fi
+  if [[ -n "$new" ]]; then
+    new="$(python3 "$APP_DIR/port.py" "$new" --explicit)" || return
+  else
+    new="$(python3 "$APP_DIR/port.py" 25443)" || return
+  fi
+  echo "需要在云安全组放行TCP $new；所有客户端都要修改端口，会短暂断开连接。"
+  local answer
+  read -r -p "确认修改请输入 yes：" answer </dev/tty
+  [[ "$answer" == yes ]] || return 0
+  if command -v ufw >/dev/null && ufw status | grep -q '^Status: active'; then ufw allow "$new/tcp"; fi
+  if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
+    firewall-cmd --permanent --add-port="$new/tcp"
+    firewall-cmd --add-port="$new/tcp"
+  fi
+  printf '%s\n' "$new" > "$PORT_FILE.new"
+  chown root:path-socks "$PORT_FILE.new"
+  chmod 0640 "$PORT_FILE.new"
+  mv -f "$PORT_FILE.new" "$PORT_FILE"
+  local healthy=0
+  if service_restart path-socks; then
+    for attempt in {1..10}; do
+      if [[ "$(local_health 2>/dev/null || true)" == ok ]]; then healthy=1; break; fi
+      sleep 1
+    done
+  fi
+  if (( healthy == 0 )); then
+    printf '%s\n' "$old" > "$PORT_FILE"
+    service_restart path-socks || true
+    say_err "启用失败，已恢复端口配置 $old；请用sbb status确认服务"
     return
   fi
-  printf '%s\n' "$new" > "$DOMAIN_FILE"
-  chmod 0600 "$DOMAIN_FILE"
-  sed "s/__DOMAIN__/$new/g" "$APP_DIR/nginx-tls.conf.template" > "$site"
-  nginx -t && service_restart nginx
-  rm -f -- "$backup"
-  say_ok "域名已更换为 $new"
+  say_ok "端口已改为 $new，UUID和Path不变；未删除旧防火墙规则。"
+)
+
+local_health() {
+  local d p
+  d="$(domain)"; p="$(port)"
+  curl --noproxy '*' -fsS --max-time 5 --resolve "$d:$p:127.0.0.1" "https://$d:$p/health"
 }
 
 status_check() {
-  local connections memory
-  connections="$(ss -Hnt state established 2>/dev/null | awk '$4 ~ /:443$/ {n++} END{print n+0}' || true)"
+  local connections memory p
+  p="$(port)"
+  connections="$(ss -Hnt state established "( sport = :$p )" 2>/dev/null | wc -l || true)"
   memory="$(ps -o rss= -C path-socks 2>/dev/null | awk '{s+=$1} END{printf "%.1f MB", s/1024}' || true)"
   echo "核心：$(service_active path-socks)"
-  echo "Nginx：$(service_active nginx)"
-  echo "当前443连接：${connections:-0}"
-  echo "核心内存：${memory:-未知}"
-  echo "拥塞控制：$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
-  echo "本机检查：$(curl -fsS --max-time 5 http://127.0.0.1:18080/health 2>/dev/null || echo 失败)"
-  echo "公网检查：$(curl -fsS --max-time 10 "https://$(domain)/health" 2>/dev/null || echo 失败)"
+  echo "独立TLS端口：$p（不依赖Nginx）"
+  echo "该端口TCP连接数（不等于设备数）：$connections"
+  echo "核心内存：$memory"
+  echo "本机TLS检查：$(local_health 2>/dev/null || echo 失败)"
+  echo "域名回环检查：$(curl --noproxy '*' -4fsS --max-time 10 "https://$(domain):$p/health" 2>/dev/null || echo 失败)"
+  echo "注意：本机检查成功不代表国内客户端可达，还需核对安全组和线路。"
+  if [[ "$(init_system)" == systemd ]]; then
+    systemctl list-timers path-socks-renew.timer --no-pager
+  else
+    rc-service crond status || true
+  fi
 }
 
 show_logs() {
@@ -185,64 +218,34 @@ show_logs() {
 }
 
 update_program() {
-  local tmp file arch
-  case "$(uname -m)" in x86_64|amd64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) say_err "架构不支持"; return ;; esac
-  tmp="$(mktemp -d /tmp/path-socks-update.XXXXXX)"
-  for file in nginx.conf.template nginx-tls.conf.template path-socks.service path-socks.openrc sbb checksums.txt; do
-    if ! curl -fL --retry 3 --connect-timeout 10 "$RAW_BASE/$file" -o "$tmp/$file"; then
-      rm -rf -- "$tmp"; say_err "下载失败，未修改现有程序"; return
-    fi
-  done
-  if ! curl -fL --retry 3 --connect-timeout 10 "$RAW_BASE/bin/path-socks-linux-$arch" -o "$tmp/path-socks"; then
-    rm -rf -- "$tmp"; say_err "核心下载失败"; return
-  fi
-  local expected actual
-  expected="$(awk -v name="path-socks-linux-$arch" '$2==name {print $1}' "$tmp/checksums.txt")"
-  actual="$(sha256sum "$tmp/path-socks" | awk '{print $1}')"
-  if [[ -z "$expected" || "$actual" != "$expected" ]]; then
-    rm -rf -- "$tmp"; say_err "核心校验失败，现有程序未修改"; return
-  fi
-  chmod 0755 "$tmp/path-socks"
-  "$tmp/path-socks" -h >/dev/null 2>&1 || { rm -rf -- "$tmp"; say_err "新核心校验失败"; return; }
-
-  install -m 0755 "$tmp/path-socks" "$APP_DIR/path-socks.new"
-  mv -f "$APP_DIR/path-socks.new" "$APP_DIR/path-socks"
-  install -m 0644 "$tmp/nginx.conf.template" "$APP_DIR/nginx.conf.template"
-  install -m 0644 "$tmp/nginx-tls.conf.template" "$APP_DIR/nginx-tls.conf.template"
-  install -m 0755 "$tmp/sbb" /usr/local/bin/sbb
-  if [[ "$(init_system)" == "systemd" ]]; then
-    install -m 0644 "$tmp/path-socks.service" /etc/systemd/system/path-socks.service
-    systemctl daemon-reload
-  else
-    install -m 0755 "$tmp/path-socks.openrc" /etc/init.d/path-socks
-  fi
-  rm -rf -- "$tmp"
-  service_restart path-socks
-  sed "s/__DOMAIN__/$(domain)/g" "$APP_DIR/nginx-tls.conf.template" > "$(nginx_site)"
-  nginx -t && service_restart nginx
-  say_ok "更新完成，域名和全部用户配置已保留"
+  run_installer "$(domain)" || say_err "更新未完成，请查看上方错误"
 }
 
 uninstall_program() {
-  local answer
-  echo "将删除核心、sbb命令、域名和全部UUID；Nginx、TLS证书和系统软件会保留。"
+  exec 8>/run/path-socks-maintenance.lock
+  flock -n 8 || { say_err "安装或证书维护正在进行，请稍后重试"; return 1; }
+  local answer init
+  echo "删除核心、sbb、UUID及本项目Token和证书；不改Nginx或其他服务。"
+  echo "/var/backups/path-socks.*中的历史私密备份会保留；防火墙规则保留。"
   read -r -p "确定卸载请输入 DELETE：" answer </dev/tty
-  [[ "$answer" == "DELETE" ]] || { echo "已取消"; return; }
-  local site init
-  site="$(nginx_site)"; init="$(init_system)"
+  [[ "$answer" == DELETE ]] || { echo "已取消"; return; }
+  init="$(init_system)"
   service_stop_disable path-socks
-  rm -f -- "$site" /etc/nginx/sites-enabled/path-socks /usr/local/bin/sbb
-  if [[ "$init" == "systemd" ]]; then
-    rm -f /etc/systemd/system/path-socks.service
+  if [[ "$init" == systemd ]]; then
+    service_stop_disable path-socks-renew.timer
+    systemctl stop path-socks-renew.service 2>/dev/null || true
+    rm -f /etc/systemd/system/path-socks.service /etc/systemd/system/path-socks-renew.service /etc/systemd/system/path-socks-renew.timer
     systemctl daemon-reload
   else
-    rm -f /etc/init.d/path-socks
+    rm -f /etc/init.d/path-socks /etc/periodic/daily/path-socks-renew
   fi
+  # Refuse symlink targets. These are the only application directories removed.
+  for target in /opt/path-socks /etc/path-socks; do
+    [[ ! -L "$target" && "$(realpath "$target")" == "$target" ]] || { say_err "目录异常，停止删除：$target"; return 1; }
+  done
   rm -rf -- /opt/path-socks /etc/path-socks
-  if nginx -t; then
-    if [[ "$init" == "systemd" ]]; then systemctl reload nginx; else rc-service nginx restart; fi
-  fi
-  say_ok "卸载完成；UUID已删除且不可恢复"
+  rm -f /usr/local/bin/sbb
+  say_ok "卸载完成；配置已删除，如有历史备份可恢复。证书日志及旧Nginx配置未删除。"
 }
 
 menu() {
@@ -259,6 +262,7 @@ menu() {
     echo "8. 更新程序"
     echo "9. 重启服务"
     echo "10. 卸载"
+    echo "11. 更换TLS端口"
     echo "0. 退出"
     echo
     read -r -p "请选择：" choice </dev/tty
@@ -267,12 +271,13 @@ menu() {
       2) add_user; pause_menu ;;
       3) delete_user; pause_menu ;;
       4) reset_user; pause_menu ;;
-      5) change_domain; pause_menu ;;
+      5) change_domain; return ;;
       6) status_check; pause_menu ;;
       7) show_logs; pause_menu ;;
-      8) update_program; pause_menu ;;
-      9) service_restart path-socks; service_restart nginx; say_ok "已重启"; pause_menu ;;
+      8) update_program; return ;;
+      9) service_restart path-socks; say_ok "已重启"; pause_menu ;;
       10) uninstall_program; return ;;
+      11) change_port; pause_menu ;;
       0) return ;;
       *) say_err "无效选择"; sleep 1 ;;
     esac
@@ -280,7 +285,7 @@ menu() {
 }
 
 require_root
-[[ -s "$DOMAIN_FILE" && -s "$USERS_FILE" && -s "$NGINX_PATH_FILE" && -s "$INIT_FILE" ]] || { say_err "尚未安装，请先运行一键安装命令"; exit 1; }
+[[ -s "$DOMAIN_FILE" && -s "$USERS_FILE" && -s "$PORT_FILE" && -s "$INIT_FILE" ]] || { say_err "尚未安装，请先运行一键安装命令"; exit 1; }
 case "${1:-menu}" in
   show) show_config ;;
   status) status_check ;;
