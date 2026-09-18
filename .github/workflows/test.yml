@@ -45,3 +45,5 @@ jobs:
         run: sudo --preserve-env=GITHUB_ACTIONS python3 -m unittest -v test_reality_install.py
       - name: Original 80/443 Nginx install and rollback (local ACME fixture)
         run: sudo --preserve-env=GITHUB_ACTIONS python3 test_nginx_mode.py
+      - name: Full project purge preserves unrelated files and shared Nginx
+        run: sudo --preserve-env=GITHUB_ACTIONS python3 -m unittest -v test_purge.py
