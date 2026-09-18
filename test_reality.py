@@ -72,6 +72,8 @@ class RealityTests(unittest.TestCase):
             r={'host':'9.9.9.9','port':port(),'user':'fixture-user','pass':'fixture-password'}
             result=subprocess.run(['node',str(ROOT/'test_clients.cjs'),'export'],input=json.dumps({'c':c,'r':r}),capture_output=True,text=True,encoding='utf-8',check=True)
             client=json.loads(result.stdout)['xray']; server=reality.server_config(s)
+            # Exercise the same authenticated outbound used by the diagnostic probe.
+            client['outbounds'][1]=dict(reality.probe_config(s,port())['outbounds'][0],tag='vps')
             # Only the disposable fixture is allowed loopback destinations.
             server['routing']['rules']=server['routing']['rules'][:1]
             client['outbounds'][0]['settings']['servers'][0]['address']='127.0.0.1'

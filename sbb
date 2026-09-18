@@ -26,7 +26,7 @@ case "${1:-menu}" in
   show|status)
     [[ ! -s /etc/sbb-reality/state.json ]] || reality_menu "$1"
     [[ ! -s /etc/path-socks/port ]] || path_menu "$1"
-    if [[ -s /etc/path-socks/users.db && ! -s /etc/path-socks/port ]]; then echo '检测到旧版/未完成的Path配置，旧服务可能仍运行；可选择安装方案2完成升级。'; fi
+    if [[ -s /etc/path-socks/users.db && ! -s /etc/path-socks/port ]]; then echo '检测到旧版/未完成的Path配置，旧服务可能仍运行；可选择安装方案1完成升级。'; fi
     exit ;;
   menu) ;;
   *) echo '命令：sbb、sbb show、sbb status、sbb reality、sbb path'; exit 1 ;;
@@ -34,15 +34,16 @@ esac
 while true; do
   echo
   echo 'SBB 管理（REALITY / Path）'
-  echo '1. 直连VPS IP（节点链接/手填参数、用户、启停）'
-  echo '2. 连接域名（Path手填住宅、用户、启停）'
+  echo '1. 连接域名（优先：Path手填住宅、用户、卸载）'
+  echo '2. 直连VPS IP（REALITY：诊断、修复、卸载）'
   echo '3. 其他 / 备用方案'
   echo '4. 安装 / 升级'
+  echo '5. 卸载指定方案（再次确认，不连带其他方案）'
   echo '0. 退出'
   read -r -p '请选择：' choice </dev/tty
   case "$choice" in
-    1) reality_menu ;;
-    2) path_menu ;;
+    1) path_menu ;;
+    2) reality_menu ;;
     3)
       echo '1. 备用配置助手连接码（已安装REALITY）'
       echo '2. 安装其他方案（进入安装菜单后选择3）'
@@ -50,6 +51,12 @@ while true; do
       read -r -p '请选择：' backup </dev/tty
       case "$backup" in 1) reality_menu helper ;; 2) install_menu; exit ;; 0) ;; *) echo '选择无效' ;; esac ;;
     4) install_menu; exit ;;
+    5)
+      echo '1. 卸载域名Path（含高位Path）'
+      echo '2. 卸载直连IP REALITY'
+      echo '0. 返回'
+      read -r -p '请选择：' remove </dev/tty
+      case "$remove" in 1) path_menu uninstall ;; 2) reality_menu uninstall ;; 0) ;; *) echo '选择无效' ;; esac ;;
     0) exit ;;
     *) echo '选择无效' ;;
   esac

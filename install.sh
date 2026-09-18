@@ -2,15 +2,17 @@
 set -Eeuo pipefail
 [[ $EUID -eq 0 ]] || { echo '请使用root运行'; exit 1; }
 echo 'SBB 三选一安装 / 更新'
-echo '1. 直连VPS IP（REALITY，显示节点链接/手填参数，不需要自己的域名）'
-echo '2. 连接域名（80/443，客户端Path手填住宅SOCKS5，无需CF Token）'
+echo '1. 连接域名（优先：80/443，Path手填住宅SOCKS5，无需CF Token）'
+echo '2. 直连VPS IP（REALITY，需客户端匹配及线路验证）'
 echo '3. 其他 / 备用方案'
+echo '4. 仅升级管理工具（新增诊断/修复/卸载，不重装核心）'
 echo '0. 退出'
 echo 'REALITY独立保留；两种Path模式共用UUID，切换会短暂断开Path连接。'
 read -r -p '选择方案 [1]：' choice </dev/tty
 case "${choice:-1}" in
-  1) script=install-reality.sh ;;
-  2) script=install-nginx.sh ;;
+  1) script=install-nginx.sh ;;
+  2) script=install-reality.sh ;;
+  4) script=update-manager.sh ;;
   3)
     echo '1. 高位端口Path（需要域名和CF DNS Token）'
     echo '2. REALITY配置助手流程（备用，需要生成文件再导入）'

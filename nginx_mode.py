@@ -67,7 +67,7 @@ def check_ports():
                 fields=line.split()
                 if fields[3]=='0A' and int(fields[1].split(':')[1],16)==port:listeners.append(f'socket:[{fields[9]}]')
         if not listeners or not all(item in owned for item in listeners):
-            raise RuntimeError(f'TCP {port}已被其他服务占用，已停止；不会关闭占用者。可选择方案1或3，或先由管理员处理原服务。')
+            raise RuntimeError(f'TCP {port}已被其他服务占用，已停止；不会关闭占用者。可选择方案2或3，或先由管理员处理原服务。')
 
 
 def packages():

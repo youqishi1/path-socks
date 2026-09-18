@@ -316,15 +316,103 @@ def apply_state(s):
         raise
 
 
+def probe_config(s, port):
+    """Local authenticated REALITY client; no direct fallback, no private key."""
+    return {'log':{'loglevel':'none'},
+        'inbounds':[{'listen':'127.0.0.1','port':port,'protocol':'socks','settings':{'auth':'noauth','udp':False}}],
+        'outbounds':[{'protocol':'vless','settings':{'vnext':[{'address':'127.0.0.1','port':s['port'],'users':[{'id':s['users'][0]['id'],'encryption':'none','flow':'xtls-rprx-vision'}]}]},
+            'streamSettings':{'network':'raw','security':'reality','realitySettings':{'serverName':s['sni'],'fingerprint':'chrome','publicKey':s['public'],'shortId':s['sid']}}}]}
+
+
+def diagnose():
+    s=json.loads((STATE/'state.json').read_text())
+    print('REALITY诊断：不修改配置，不显示密钥；会发起一次经本机REALITY的HTTPS请求。')
+    print('服务：', '运行中' if active() else '未运行', '端口：',s['port'])
+    config_test(APP/'xray',STATE/'config.json')
+    same=json.loads((STATE/'config.json').read_text())==server_config(s)
+    print('运行配置与已保存参数：','一致' if same else '不一致，可选修复恢复已保存参数')
+    if not active():return False
+    with socket.socket() as listener:
+        listener.bind(('127.0.0.1',0));port=listener.getsockname()[1]
+    with tempfile.TemporaryDirectory(prefix='sbb-probe-') as directory:
+        config=Path(directory)/'client.json'
+        atomic(config,json.dumps(probe_config(s,port)),0o600)
+        config_test(APP/'xray',config)
+        child=subprocess.Popen([str(APP/'xray'),'run','-config',str(config)],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(30):
+                if child.poll() is not None:raise RuntimeError('诊断客户端未启动，可能发生本机端口冲突')
+                try:
+                    with socket.create_connection(('127.0.0.1',port),timeout=0.2):break
+                except OSError:time.sleep(0.1)
+            result=run('curl','--noproxy','','--proxy',f'socks5h://127.0.0.1:{port}','-sS','--connect-timeout','10','--max-time','25','-o','/dev/null','-w','%{http_code}','https://'+s['sni']+'/',capture=True,check=False)
+            ok=result.returncode==0 and result.stdout.strip().isdigit() and result.stdout.strip()!='000'
+            print('本机REALITY认证握手及HTTPS转发：','通过，HTTP '+result.stdout.strip() if ok else '失败，curl错误码 '+str(result.returncode))
+            print('通过仅代表VPS本机链路，不能证明国内线路或v2rayN配置正常。' if ok else '请核对REALITY目标可达性、配置/密钥和服务日志；不能仅凭此结果认定端口被封。')
+            return ok
+        finally:
+            child.terminate()
+            try:child.wait(timeout=5)
+            except subprocess.TimeoutExpired:child.kill();child.wait(timeout=5)
+
+
+def repair():
+    s=json.loads((STATE/'state.json').read_text())
+    print('按已保存参数重建REALITY运行配置并重启；保留UUID、密钥和端口。')
+    print('这能修复配置被改坏/服务停止，不能修复客户端错误、被阻断线路或不可用目标。')
+    if prompt('会断开REALITY连接，输入yes执行')!='yes':return
+    Path('/var/backups').mkdir(exist_ok=True)
+    backup=Path(tempfile.mkdtemp(prefix='sbb-reality-repair.',dir='/var/backups'));backup.chmod(0o700)
+    for name in ('state.json','config.json'):
+        atomic(backup/name,(STATE/name).read_bytes(),0o600)
+    apply_state(s)
+    print('运行配置已恢复并重启，备份：',backup)
+    diagnose()
+
+
+def uninstall():
+    init=system()
+    unit=Path('/etc/systemd/system/sbb-reality.service' if init=='systemd' else '/etc/init.d/sbb-reality')
+    targets=(APP,STATE,unit)
+    expected=('/opt/sbb-reality','/etc/sbb-reality',str(unit))
+    for target,literal in zip(targets,expected):
+        if str(target)!=literal or target.is_symlink() or target.resolve()!=Path(literal):
+            raise RuntimeError('目录或服务文件异常，拒绝卸载')
+    print('只卸载本项目REALITY，保留Path、Nginx、共享sbb、防火墙规则和系统账号。')
+    print('程序、配置和密钥会移入root私有备份，不会彻底删除。')
+    if prompt('确认输入DELETE')!='DELETE':return False
+    Path('/var/backups').mkdir(exist_ok=True)
+    backup=Path(tempfile.mkdtemp(prefix='sbb-reality-uninstall.',dir='/var/backups'));backup.chmod(0o700)
+    if init=='systemd':run('systemctl','disable','--now','sbb-reality')
+    else:service('stop');run('rc-update','del','sbb-reality','default',check=False)
+    if active():raise RuntimeError('服务仍在运行，未移除文件')
+    moved=[]
+    try:
+        for index,target in enumerate(targets):
+            if target.exists():
+                dest=backup/str(index);shutil.move(str(target),str(dest));moved.append((target,dest))
+        if init=='systemd':run('systemctl','daemon-reload')
+    except Exception:
+        for target,dest in reversed(moved):shutil.move(str(dest),str(target))
+        print('卸载未完成，已尝试恢复文件；服务保持停用，请检查。')
+        raise
+    print('REALITY已卸载；可恢复的私密备份：',backup)
+    return True
+
+
 def menu():
     while True:
         s=json.loads((STATE/'state.json').read_text())
-        print('\n直连VPS IP：1节点链接/手填参数 2添加用户 3删除用户 4重置UUID 5改端口 6状态 7启用/重启 8停用(关闭自启) 9日志 10备用配置助手连接码 0返回')
+        print('\n直连VPS IP：1节点链接/手填参数 2添加用户 3删除用户 4重置UUID 5改端口 6状态 7启用/重启 8停用(关闭自启) 9日志 10备用配置助手连接码 11连接诊断 12恢复配置/修复 13卸载REALITY 0返回')
         choice=prompt('选择','0')
         if choice=='0': return
         try:
             if choice=='1': show(s)
             elif choice=='10': show(s,backup=True)
+            elif choice=='11': diagnose()
+            elif choice=='12': repair()
+            elif choice=='13':
+                if uninstall():return
             elif choice=='2':
                 label=prompt('用户名称',f'用户{len(s["users"])+1}')
                 s['users'].append({'label':label,'id':str(uuid.uuid4())}); apply_state(s)
@@ -372,6 +460,9 @@ def main():
         elif action=='show': show(json.loads((STATE/'state.json').read_text()))
         elif action=='helper': show(json.loads((STATE/'state.json').read_text()),backup=True)
         elif action=='status': print('REALITY：运行中' if active() else 'REALITY：未运行')
+        elif action=='diagnose': diagnose()
+        elif action=='repair': repair()
+        elif action=='uninstall': uninstall()
         else: raise ValueError('未知操作')
 
 

@@ -7,6 +7,7 @@ from pathlib import Path
 import shutil
 import socket
 import subprocess
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -51,7 +52,45 @@ class InstallTests(unittest.TestCase):
                 self.assertEqual((reality.STATE/'state.json').stat().st_mode & 0o777,0o600)
                 self.assertTrue(reality.active())
                 old_run('bash','/usr/local/bin/sbb','status')
-                old_run('systemctl','stop','sbb-reality')
+        # Updating the manager must neither restart nor change any credentials.
+        saved=(reality.STATE/'state.json').read_bytes()
+        pid=reality.current_pid()
+        with tempfile.TemporaryDirectory() as directory:
+            mock=Path(directory)/'curl'
+            mock.write_text('''#!/usr/bin/env python3
+import json,os,shutil,sys
+from pathlib import Path
+args=sys.argv[1:]
+if any('api.github.com' in a for a in args):print(json.dumps({'sha':'a'*40}))
+else:
+    url=next(a for a in args if a.startswith('https://'))
+    shutil.copyfile(Path(os.environ['SBB_TEST_ROOT'])/url.rsplit('/',1)[-1],args[args.index('-o')+1])
+''')
+            mock.chmod(0o755)
+            env=os.environ.copy();env['PATH']=directory+':'+env['PATH'];env['SBB_TEST_ROOT']=str(reality.HERE)
+            subprocess.run(['bash',str(reality.HERE/'update-manager.sh')],env=env,check=True)
+        self.assertEqual(reality.current_pid(),pid)
+        self.assertEqual((reality.STATE/'state.json').read_bytes(),saved)
+        # Deliberately broken config is rebuilt from saved state, not new keys.
+        (reality.STATE/'config.json').write_text('{}')
+        with patch.object(reality,'prompt',return_value='yes'),patch.object(reality,'diagnose',return_value=True):
+            reality.repair()
+        self.assertEqual((reality.STATE/'state.json').read_bytes(),saved)
+        self.assertEqual(json.loads((reality.STATE/'config.json').read_text()),reality.server_config(second))
+        with patch.object(reality,'prompt',return_value='no'):
+            self.assertFalse(reality.uninstall())
+        self.assertTrue(reality.active())
+        with patch.object(reality,'prompt',return_value='DELETE'):
+            self.assertTrue(reality.uninstall())
+        self.assertFalse(reality.active())
+        self.assertFalse(reality.APP.exists())
+        self.assertFalse(reality.STATE.exists())
+        self.assertFalse(Path('/etc/systemd/system/sbb-reality.service').exists())
+        self.assertTrue(Path('/usr/local/bin/sbb').exists())
+        self.assertEqual(before,Path('/etc/path-socks/users.db').read_bytes())
+        backup=max(Path('/var/backups').glob('sbb-reality-uninstall.*'),key=lambda p:p.stat().st_mtime)
+        self.assertEqual((backup/'1/state.json').read_bytes(),saved)
+        self.assertEqual(backup.stat().st_mode&0o777,0o700)
 
 
 if __name__=='__main__': unittest.main()

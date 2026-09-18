@@ -4,8 +4,8 @@
 
 | 选择 | 用途 | 安装需要 | 住宅IP怎么换 |
 |---|---|---|---|
-| 1 · 直连VPS IP | REALITY节点链接或手填参数，客户端手动链式SOCKS5 | 公网IPv4、空闲高位TCP端口；无需自己的域名/CF Token | 在v2rayN住宅分组手动添加节点、点击切换 |
-| 2 · Path原版80/443 | Nginx＋Go核心＋WebSocket TLS | 域名灰云、空闲且公网可达的80/443；不需要CF Token | 直接修改客户端Path |
+| 1 · 域名Path（操作优先） | Nginx＋Go核心＋WebSocket TLS | 域名灰云、空闲且公网可达的80/443；不需要CF Token | 直接修改客户端Path |
+| 2 · 直连VPS IP | REALITY节点链接或手填参数，客户端手动链式SOCKS5 | 公网IPv4、空闲高位TCP端口；无需自己的域名/CF Token | 在v2rayN住宅分组手动添加节点、点击切换 |
 | 3 · 其他/备用 | 子菜单1：高位Path；子菜单2：REALITY配置助手 | 高位Path需要域名/CF Token；助手需要生成文件导入 | 按对应备用方案操作 |
 
 REALITY与Path配置独立，可同时保留。**两种Path模式共用核心和UUID，互相切换而非同时运行**；切换会短暂断开Path连接，需要更新客户端端口。原版检测到其他服务占用80/443时停止，不接管原网站。原版使用独立`path-socks-nginx`实例及配置；若本次首次安装Nginx软件包，会停用该新安装包的默认实例，已有其他Nginx服务不操作。
@@ -21,13 +21,14 @@ sbb_file=$(mktemp /tmp/sbb-install.XXXXXX) && curl -fsSL --retry 3 --connect-tim
 出现菜单：
 
 ```text
-1. 直连VPS IP（节点链接/手填参数）
-2. 连接域名（80/443，Path手填住宅）
+1. 连接域名（操作优先：80/443，Path手填住宅）
+2. 直连VPS IP（REALITY，需验证客户端及线路）
 3. 其他/备用方案（高位Path、配置助手）
+4. 仅升级管理工具（不重装核心、不改变节点配置）
 0. 退出
 ```
 
-选择1后：
+选择2（IP方案）后：
 
 1. 确认自动识别的公网IPv4；错误时手填正确地址。
 2. 端口通常回车，优先26443；被占用时自动选择空闲高位端口。
@@ -35,9 +36,9 @@ sbb_file=$(mktemp /tmp/sbb-install.XXXXXX) && curl -fsSL --retry 3 --connect-tim
 4. 安装后，在阿里云等厂商的**安全组放行显示的TCP端口**。脚本不能替你改云安全组。
 5. 默认生成10个独立用户，可在sbb添加。默认显示对应用户的`vless://`节点链接和手填参数，只交给该用户。无需配置助手。已有安装升级会保留密钥、UUID和端口，过程中可能短暂重连。
 
-已有Path版本的用户：用上述命令进入新菜单，不要用旧版菜单8跨方案更新。选择1不会读取CF Token，也不会覆盖Path的UUID。已有旧版单方案管理脚本会保留。
+已有Path版本的用户：用上述命令进入新菜单，不要用旧版菜单8跨方案更新。选择2不会读取CF Token，也不会覆盖Path的UUID。
 
-选择2后：输入域名即可。提前将域名A记录指向本VPS、关闭橙云，在云安全组放行TCP **80和443**；不要保留错误的AAAA记录。自动申请HTTP-01证书，客户端使用443，后续继续直接改Path。80需要持续开放用于续期，不需要Cloudflare Token。其他服务已占用80/443则安全退出，不会强停；可以改选1或3。
+选择1（域名方案）后：输入域名即可。提前将域名A记录指向本VPS、关闭橙云，在云安全组放行TCP **80和443**；不要保留错误的AAAA记录。自动申请HTTP-01证书，客户端使用443，后续继续直接改Path。80需要持续开放用于续期，不需要Cloudflare Token。其他服务已占用80/443则安全退出，不会强停；可以改选2或3。排第一是操作简便优先，不是承诺任何线路最快或绝对安全；不要公开含住宅凭据的Path。
 
 REALITY服务：`sbb-reality`，程序 `/opt/sbb-reality`，配置 `/etc/sbb-reality`。Path服务：`path-socks`，目录沿用旧版。原版额外使用`path-socks-nginx`及`/etc/path-socks-nginx`，不覆盖`/etc/nginx`网站配置。不修改全局BBR、队列或其他网络参数。
 
@@ -107,7 +108,21 @@ sbb status          # 两套服务状态
 
 REALITY添加/删除用户、重置UUID或改端口会重启该方案，现有连接会断开并重连。更新通过管理菜单4重新选择对应方案，保留已有密钥与用户。旧版管理菜单请重新执行本文安装命令进入新版。启用失败尝试恢复旧文件；备份保存在root私有的 `/var/backups/sbb-reality.*`。
 
-高位Path的证书、Token、安全组和Path格式详见 [Path方案说明](PATH-MODE.md)，安装时选择3，再选择1。原版80/443选择2，按本文步骤操作，不需要Token。
+高位Path的证书、Token、安全组和Path格式详见 [Path方案说明](PATH-MODE.md)，安装时选择3，再选择1。原版80/443选择1，按本文步骤操作，不需要Token。
+
+### 已安装但IP不通：先升级工具，不重装
+
+执行上面安装命令，选择**4 仅升级管理工具**。不会重启服务或改变端口/密钥/UUID。
+
+```bash
+sbb reality diagnose   # 本机真实REALITY认证及HTTPS转发检查，不输出凭据
+sbb reality repair     # 确认yes后按已保存参数重建运行配置并重启
+sbb reality uninstall  # 确认DELETE后仅卸载REALITY，保留Path和共享sbb
+```
+
+TCP端口可达不代表REALITY可用。诊断通过也只证明VPS本机链路，不证明国内线路及客户端配置。修复只恢复已保存配置，不会自动换密钥、改目标或承诺修好未知握手错误；尚需客户端日志定位用户实际故障。
+
+REALITY卸载把程序、配置和服务文件移动到`/var/backups/sbb-reality-uninstall.*`（root私有），分别为`0`程序、`1`配置、`2`服务文件，可用于恢复。保留账号、防火墙规则和备份；不要公开备份，其中含私钥。域名Path的原卸载功能仍在其管理菜单中。
 
 ## 稳定、速度和兼容边界
 

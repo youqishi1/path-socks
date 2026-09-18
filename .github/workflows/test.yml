@@ -21,7 +21,7 @@ jobs:
         run: go test -race ./...
       - name: Shell syntax
         run: |
-          for file in install.sh install-nginx.sh install-path.sh install-reality.sh sbb path-manager renew.sh; do bash -n "$file"; done
+          for file in install.sh install-nginx.sh install-path.sh install-reality.sh update-manager.sh sbb path-manager renew.sh; do bash -n "$file"; done
           sh -n path-socks-tls.openrc
           sh -n bootstrap.sh
       - name: Port collision tests

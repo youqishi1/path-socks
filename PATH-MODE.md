@@ -1,6 +1,6 @@
 # 高位Path方案说明（安装菜单3 → 1）
 
-80/443原版请选安装菜单2，参见[首页说明](README.md)，无需Cloudflare Token。本文仅说明高位端口模式。
+80/443原版请选安装菜单1，参见[首页说明](README.md)，无需Cloudflare Token。本文仅说明高位端口模式。
 
 客户端使用 VLESS + WebSocket + TLS 连接本项目，由客户端Path指定公网SOCKS5落地。单个静态Go核心直接处理TLS，不需要Nginx、Node、Docker或workerd。
 

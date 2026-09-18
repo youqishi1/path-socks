@@ -303,6 +303,7 @@ require_root
 case "${1:-menu}" in
   show) show_config ;;
   status) status_check ;;
+  uninstall) uninstall_program ;;
   menu) menu ;;
   *) say_err "可用命令：sbb、sbb show、sbb status"; exit 1 ;;
 esac
