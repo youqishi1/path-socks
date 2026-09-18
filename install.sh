@@ -6,13 +6,16 @@ echo '1. 连接域名（优先：80/443，Path手填住宅SOCKS5，无需CF Toke
 echo '2. 直连VPS IP（REALITY，需客户端匹配及线路验证）'
 echo '3. 其他 / 备用方案'
 echo '4. 仅升级管理工具（新增诊断/修复/卸载，不重装核心）'
+echo '6. 彻底卸载整个项目（永久删除配置及历史备份）'
 echo '0. 退出'
 echo 'REALITY独立保留；两种Path模式共用UUID，切换会短暂断开Path连接。'
 read -r -p '选择方案 [1]：' choice </dev/tty
+args=()
 case "${choice:-1}" in
   1) script=install-nginx.sh ;;
   2) script=install-reality.sh ;;
   4) script=update-manager.sh ;;
+  6) script=sbb; args=(purge) ;;
   3)
     echo '1. 高位端口Path（需要域名和CF DNS Token）'
     echo '2. REALITY配置助手流程（备用，需要生成文件再导入）'
@@ -30,4 +33,4 @@ esac
 tmp="$(mktemp /tmp/sbb-scheme.XXXXXX)"
 trap 'rm -f -- "$tmp"' EXIT
 curl -fsSL --retry 3 --connect-timeout 10 --max-time 120 "https://raw.githubusercontent.com/youqishi1/path-socks/main/$script" -o "$tmp"
-bash "$tmp"
+bash "$tmp" "${args[@]}"
