@@ -25,7 +25,7 @@ jobs:
           sh -n path-socks-tls.openrc
           sh -n bootstrap.sh
       - name: Port collision tests
-        run: python3 -m unittest -v test_ports.py
+        run: python3 -m unittest -v test_ports.py test_manual_export.py
       - name: Offline client helper and real upstream cores
         run: |
           node test_clients.cjs

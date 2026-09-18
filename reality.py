@@ -17,6 +17,7 @@ import sys
 import tempfile
 import time
 import uuid
+from urllib.parse import urlencode, quote
 import zipfile
 
 from port import choose
@@ -260,21 +261,38 @@ def install():
     print(f'安装成功；请在云安全组放行TCP {s["port"]}。未更改Path或Nginx服务。')
     print('配置与密钥备份仅root可读：',backup)
     print('监听检查通过不等于公网链路已经验证；请在客户端验证住宅出口。')
-    show(s)
+    show(s, backup=os.environ.get('SBB_BACKUP_HELPER')=='1')
 
 
-def show(s):
+def show(s, backup=False):
     print('\nREALITY中转：',s['host'], '端口：',s['port'], '用户数：',len(s['users']))
-    print('下面连接码含用户凭据，只交给对应用户，不要公开。连接码不是住宅出口配置。')
+    print('下面内容含用户凭据，只交给对应用户。仅连接此节点，出口是VPS，不是住宅。')
     for i,u in enumerate(s['users'],1):
         print(f'{i}. {u["label"]}')
-    index = int(prompt('导出哪个用户的连接码', '1')) - 1
+    index = int(prompt('查看哪个用户', '1')) - 1
     if not 0 <= index < len(s['users']): raise ValueError('用户序号无效')
     client = {k:s[k] for k in ('host','port','sni','public','sid')}
     client['id'] = s['users'][index]['id']
-    print('SBB1.' + base64.urlsafe_b64encode(json.dumps(client).encode()).decode())
-    print('下载项目中的client-helper.html到电脑，双击打开，粘贴连接码并在本地填写住宅SOCKS5。')
-    print('地址：https://github.com/youqishi1/path-socks/blob/main/client-helper.html')
+    if backup:
+        print('备用：配置助手连接码（不支持直接粘贴进v2rayN）：')
+        print('SBB1.' + base64.urlsafe_b64encode(json.dumps(client).encode()).decode())
+        print('下载client-helper.html，在本地填写住宅SOCKS5，生成文件导入。')
+        print('地址：https://github.com/youqishi1/path-socks/blob/main/client-helper.html')
+        return
+    alias=f'SBB-VPS-{s["host"]}-{s["port"]}-u{index+1}'
+    query=urlencode({'encryption':'none','security':'reality','sni':s['sni'],'fp':'chrome','pbk':s['public'],'sid':s['sid'],'type':'tcp','flow':'xtls-rprx-vision'})
+    print('\n复制下面vless://完整一行，在v2rayN按Ctrl+V导入：')
+    print(f'vless://{client["id"]}@{s["host"]}:{s["port"]}?{query}#{quote(alias)}')
+    print('\n也可手填：协议VLESS；加密none；传输TCP；TLS类型reality；Flow xtls-rprx-vision；指纹chrome')
+    for label,key in [('地址','host'),('端口','port'),('UUID','id'),('SNI','sni'),('公钥/PublicKey','public'),('ShortId','sid')]:print(f'{label}：{client[key]}')
+    print('\nv2rayN手动住宅链式设置（不需要生成文件）：')
+    print('1. 将上面的VPS节点保留在单独分组，备注必须唯一：'+alias)
+    print('2. 新建“住宅出口”分组，在分组设置的“前置代理别名”中填入上面的完整备注；落地代理别名留空。')
+    print('3. 在“住宅出口”分组手动添加SOCKS节点，填写住宅IP、端口、账号、密码；选择Xray核心。')
+    print('4. 启用该住宅节点。以后在这个分组添加不同住宅节点，点击切换即可；不需要Path。')
+    print('5. 不要直接启用VPS节点当住宅使用；不要删除或改名VPS节点，否则前置链可能被跳过。')
+    print('6. 核对实际出口为住宅；住宅密码填错时访问应失败。客户端规则/DNS仍需检查，不能保证全设备流量都经过代理。')
+    print('官方设置说明：https://github.com/2dust/v2rayN/wiki/Description-of-proxy-chain')
 
 
 def apply_state(s):
@@ -301,11 +319,12 @@ def apply_state(s):
 def menu():
     while True:
         s=json.loads((STATE/'state.json').read_text())
-        print('\nREALITY：1连接码 2添加用户 3删除用户 4重置UUID 5改端口 6状态 7启用/重启 8停用(关闭自启) 9日志 0返回')
+        print('\n直连VPS IP：1节点链接/手填参数 2添加用户 3删除用户 4重置UUID 5改端口 6状态 7启用/重启 8停用(关闭自启) 9日志 10备用配置助手连接码 0返回')
         choice=prompt('选择','0')
         if choice=='0': return
         try:
             if choice=='1': show(s)
+            elif choice=='10': show(s,backup=True)
             elif choice=='2':
                 label=prompt('用户名称',f'用户{len(s["users"])+1}')
                 s['users'].append({'label':label,'id':str(uuid.uuid4())}); apply_state(s)
@@ -351,6 +370,7 @@ def main():
         if action=='install': install()
         elif action=='menu': menu()
         elif action=='show': show(json.loads((STATE/'state.json').read_text()))
+        elif action=='helper': show(json.loads((STATE/'state.json').read_text()),backup=True)
         elif action=='status': print('REALITY：运行中' if active() else 'REALITY：未运行')
         else: raise ValueError('未知操作')
 

@@ -4,9 +4,9 @@
 
 | 选择 | 用途 | 安装需要 | 住宅IP怎么换 |
 |---|---|---|---|
-| 1 · REALITY（推荐） | 官方Xray核心＋本地链式住宅SOCKS5 | 公网IPv4、空闲高位TCP端口；无需自己的域名/CF Token | 在本地修改住宅节点或重新生成配置 |
+| 1 · 直连VPS IP | REALITY节点链接或手填参数，客户端手动链式SOCKS5 | 公网IPv4、空闲高位TCP端口；无需自己的域名/CF Token | 在v2rayN住宅分组手动添加节点、点击切换 |
 | 2 · Path原版80/443 | Nginx＋Go核心＋WebSocket TLS | 域名灰云、空闲且公网可达的80/443；不需要CF Token | 直接修改客户端Path |
-| 3 · Path高位端口 | Go核心直接提供WebSocket TLS | 域名灰云、有效CF DNS Token、空闲高位TCP端口 | 直接修改客户端Path |
+| 3 · 其他/备用 | 子菜单1：高位Path；子菜单2：REALITY配置助手 | 高位Path需要域名/CF Token；助手需要生成文件导入 | 按对应备用方案操作 |
 
 REALITY与Path配置独立，可同时保留。**两种Path模式共用核心和UUID，互相切换而非同时运行**；切换会短暂断开Path连接，需要更新客户端端口。原版检测到其他服务占用80/443时停止，不接管原网站。原版使用独立`path-socks-nginx`实例及配置；若本次首次安装Nginx软件包，会停用该新安装包的默认实例，已有其他Nginx服务不操作。
 
@@ -21,9 +21,9 @@ sbb_file=$(mktemp /tmp/sbb-install.XXXXXX) && curl -fsSL --retry 3 --connect-tim
 出现菜单：
 
 ```text
-1. REALITY + 本地住宅链式代理（推荐，无需域名和CF Token）
-2. Path原版80/443（需要域名，不需要CF Token）
-3. Path高位端口（需要域名和CF DNS Token）
+1. 直连VPS IP（节点链接/手填参数）
+2. 连接域名（80/443，Path手填住宅）
+3. 其他/备用方案（高位Path、配置助手）
 0. 退出
 ```
 
@@ -33,7 +33,7 @@ sbb_file=$(mktemp /tmp/sbb-install.XXXXXX) && curl -fsSL --retry 3 --connect-tim
 2. 端口通常回车，优先26443；被占用时自动选择空闲高位端口。
 3. REALITY目标域名通常回车。它不是你的域名；安装器会检查目标的TLS1.3与HTTP/2。检查失败先停止，不关闭证书验证。
 4. 安装后，在阿里云等厂商的**安全组放行显示的TCP端口**。脚本不能替你改云安全组。
-5. 默认生成10个独立用户，可在sbb添加。导出对应用户的SBB1.连接码，只交给该用户。
+5. 默认生成10个独立用户，可在sbb添加。默认显示对应用户的`vless://`节点链接和手填参数，只交给该用户。无需配置助手。已有安装升级会保留密钥、UUID和端口，过程中可能短暂重连。
 
 已有Path版本的用户：用上述命令进入新菜单，不要用旧版菜单8跨方案更新。选择1不会读取CF Token，也不会覆盖Path的UUID。已有旧版单方案管理脚本会保留。
 
@@ -41,7 +41,21 @@ sbb_file=$(mktemp /tmp/sbb-install.XXXXXX) && curl -fsSL --retry 3 --connect-tim
 
 REALITY服务：`sbb-reality`，程序 `/opt/sbb-reality`，配置 `/etc/sbb-reality`。Path服务：`path-socks`，目录沿用旧版。原版额外使用`path-socks-nginx`及`/etc/path-socks-nginx`，不覆盖`/etc/nginx`网站配置。不修改全局BBR、队列或其他网络参数。
 
-## 2. 本地配置：住宅信息不填VPS
+## 2. 首选：v2rayN直接手填住宅，不生成文件
+
+在VPS执行 `sbb reality show`，选用户，复制`vless://`完整一行，在v2rayN按Ctrl+V导入。该节点仅是VPS中转，不是住宅出口。
+
+1. 将VPS节点放在单独分组，保留唯一备注（例如生成的`SBB-VPS-...`）。
+2. 新建“住宅出口”分组，在该分组设置中的**前置代理别名**填写VPS节点完整备注，落地代理别名留空。
+3. 在“住宅出口”分组手动添加SOCKS节点，填写代理商提供的住宅IP、端口、用户名、密码，选择Xray核心。VPS节点不要放进这个分组，避免循环引用。
+4. 启用住宅节点。多个住宅就添加多个SOCKS节点，后续点击切换，不用生成JSON、不用Path。
+5. 核对出口及失败行为：住宅密码错误应无法访问。别名错、改名或删除前置节点可能导致链式关系被跳过；不同版本界面可能不同，找不到设置先停止并核对版本，不要假定链式已经生效。
+
+这是v2rayN客户端原生功能，VPS升级不能代替首次客户端设置。参见[官方链式代理说明](https://github.com/2dust/v2rayN/wiki/Description-of-proxy-chain)。原来的配置助手和已生成文件继续保留，不强制迁移。
+
+## 备用：配置助手流程（可选，不作为默认步骤）
+
+在VPS执行 `sbb reality helper` 获取旧式SBB1连接码，或进入 `sbb` → 3其他/备用 → 1配置助手连接码。
 
 下载仓库里的 [client-helper.html](client-helper.html)（在GitHub文件页面选择下载原始文件），保存到电脑后双击打开。无需Python、Node或安装其他运行时。
 
@@ -91,9 +105,9 @@ sbb path            # 原Path管理菜单
 sbb status          # 两套服务状态
 ```
 
-REALITY添加/删除用户、重置UUID或改端口会重启该方案，现有连接会断开并重连。更新通过顶层菜单3重新选择对应方案，保留已有密钥与用户。启用失败尝试恢复旧文件；备份保存在root私有的 `/var/backups/sbb-reality.*`。
+REALITY添加/删除用户、重置UUID或改端口会重启该方案，现有连接会断开并重连。更新通过管理菜单4重新选择对应方案，保留已有密钥与用户。旧版管理菜单请重新执行本文安装命令进入新版。启用失败尝试恢复旧文件；备份保存在root私有的 `/var/backups/sbb-reality.*`。
 
-高位Path的证书、Token、安全组和Path格式详见 [Path方案说明](PATH-MODE.md)，安装时选择3。原版80/443选择2，按本文步骤操作，不需要Token。
+高位Path的证书、Token、安全组和Path格式详见 [Path方案说明](PATH-MODE.md)，安装时选择3，再选择1。原版80/443选择2，按本文步骤操作，不需要Token。
 
 ## 稳定、速度和兼容边界
 
